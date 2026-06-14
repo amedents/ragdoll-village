@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Ragdoll Village" />
+<meta name="theme-color" content="#0e1413" />
+<link rel="apple-touch-icon" sizes="180x180" href="icon-180.png" />
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png" />
+<link rel="manifest" href="manifest.webmanifest" />
+<title>Ragdoll Village — FFA Shootout</title>
+<style>
+  :root{ --bg:#0e1413; --txt:#eaf2ee; --muted:#9fb1ac; --accent:#5bd6c0; }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--txt);-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+    overscroll-behavior:none;touch-action:none;}
+  #game{display:block;width:100vw;height:100vh;cursor:crosshair;}
+  /* ---- overlays ---- */
+  .overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(900px 500px at 50% 20%,rgba(30,52,48,.55),rgba(7,11,10,.92));
+    z-index:20;text-align:center;padding:20px;}
+  .panel{max-width:540px;background:rgba(14,22,20,.86);border:1px solid #28403a;border-radius:18px;
+    padding:26px 24px;box-shadow:0 20px 60px rgba(0,0,0,.5);}
+  h1{margin:0 0 4px;font-size:30px;letter-spacing:.5px}
+  .accent{color:var(--accent)}
+  .sub{color:var(--muted);font-size:14px;line-height:1.55;margin:6px 0 16px}
+  .keys{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px;color:var(--muted);
+    text-align:left;margin:0 auto 18px;max-width:340px}
+  .keys b{color:var(--txt);font-weight:600}
+  kbd{display:inline-block;min-width:20px;padding:2px 7px;border:1px solid #3a564f;border-bottom-width:2px;
+    border-radius:6px;background:#14201d;color:#dff;font:600 12px/1.2 ui-monospace,monospace}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:center;margin-top:6px}
+  button{cursor:pointer;border:1px solid #2c4a43;background:var(--accent);color:#05201b;font-weight:800;
+    border-radius:11px;padding:12px 18px;font-size:15px;transition:filter .12s,transform .05s}
+  button:hover{filter:brightness(1.08)} button:active{transform:translateY(1px)}
+  button.ghost{background:#16241f;color:var(--txt);font-weight:600}
+  .field{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
+  input[type=range]{accent-color:var(--accent)}
+  .scoreboard{font-size:13px;color:var(--muted);margin-top:8px}
+  .scoreboard table{margin:6px auto 0;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  .scoreboard td{padding:3px 12px;text-align:left}
+  .scoreboard td.k{text-align:right;color:var(--txt);font-weight:700}
+  .swatch{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:middle;margin-right:7px}
+  .hide{display:none!important}
+  /* ---- touch controls (mobile only) ---- */
+  #touch{position:fixed;inset:0;z-index:15;pointer-events:none;display:none}
+  #touch .btn{position:absolute;pointer-events:auto;width:64px;height:64px;border-radius:50%;
+    background:rgba(20,34,30,.5);border:1px solid #3a564f;color:#dff;font-size:26px;
+    display:flex;align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+  #touch .btn:active{background:rgba(91,214,192,.35)}
+  #tl{left:14px;bottom:84px} #tr{left:92px;bottom:84px}
+  #tj{right:96px;bottom:120px} #tf{right:18px;bottom:60px;width:80px;height:80px;font-size:30px}
+  .credit{position:fixed;left:10px;bottom:8px;font-size:11px;color:#52645f;z-index:14;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<!-- on-screen touch controls (revealed on touch devices) -->
+<div id="touch">
+  <div class="btn" id="tl">◀</div>
+  <div class="btn" id="tr">▶</div>
+  <div class="btn" id="tj">⤒</div>
+  <div class="btn" id="tf">◎</div>
+</div>
+<div class="credit">Ragdoll Village — offline · no servers · no tracking</div>
+
+<!-- start / pause / game-over overlay -->
+<div class="overlay" id="overlay">
+  <div class="panel">
+    <h1>Ragdoll <span class="accent">Village</span></h1>
+    <div class="sub" id="ovSub">A 10-way free-for-all in a sleepy village. You + 9 AI gunfighters,
+      floppy ragdoll physics, last scoreboard standing wins.</div>
+    <div class="keys" id="ovKeys">
+      <kbd>A</kbd><b>/</b><kbd>D</kbd><span>move left / right</span>
+      <kbd>W</kbd><b>/</b><kbd>Space</kbd><span>jump</span>
+      <span><b>Mouse</b></span><span>aim</span>
+      <span><b>Click / hold</b></span><span>shoot</span>
+      <kbd>R</kbd><span>restart match</span>
+      <kbd>P</kbd><span>pause</span>
+    </div>
+    <div class="row">
+      <span class="field">First to <input id="targetKills" type="range" min="5" max="40" step="1" />
+        <b id="tkVal" style="color:var(--txt)">15</b> kills</span>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="startBtn">▶ Start match</button>
+      <button class="ghost" id="muteBtn">🔊 Sound</button>
+    </div>
+    <div class="scoreboard" id="finalBoard"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================================
+   RAGDOLL VILLAGE — single-file free-for-all ragdoll-physics shooter.
+   Architecture follows the engineering-method spine (dependency order, top → bottom):
+     1 constants/tables · 2 utils · 3 state · 4 model · 5 systems · 6 render ·
+     7 input · 8 loop · 9 wiring · 10 boot · 11 self-test
+   Model/view split: update() mutates state; render() only reads. Fixed-timestep loop.
+   Seeded PRNG → deterministic world + AI (replay/self-test). Verlet ragdolls ARE the
+   data: what you see is a readout of point masses + constraints, not decoration.
+   ===================================================================================== */
+
+/* ---------- 1. CONSTANTS / DATA TABLES ------------------------------------------------ */
+const LS_KEY = "village_ffa_v1";
+const W = {                       // world dimensions (px)
+  width: 2600, height: 1100, ground: 920, sky1:"#16323a", sky2:"#0c1816"
+};
+const PHYS = {
+  FIXED: 1/120,                   // physics substep (s) — fixed for determinism + stability
+  G: 2100,                        // gravity px/s²
+  AIR_DAMP: 0.992,                // velocity retention per substep in air
+  CONSTRAINT_ITERS: 6,
+  MUSCLE: 0.34,                   // how hard a conscious body pulls toward its pose pose (0..1)
+  GROUND_FRICTION: 0.72,          // tangential velocity kept on ground contact
+  WALK_SPEED: 132,               // px/s ground locomotion
+  JUMP_VY: -560,                 // jump impulse (px/s), applied to all points
+  STRIDE: 8                       // foot swing amplitude
+};
+const COUNT = 10;                 // 1 player + 9 AI
+const RESPAWN_S = 3.0;
+const BODY_HP = 100;
+
+// Weapon catalog (procedural — the visible gun is a readout of these numbers).
+const WEAPONS = {
+  pistol:  { name:"Pistol",  dmg:24, rofMs:340, spread:0.035, speed:1500, recoil:130, auto:false, pellets:1, mag:Infinity, range:760, col:"#ffd27a" },
+  smg:     { name:"SMG",     dmg:13, rofMs:95,  spread:0.075, speed:1450, recoil:80,  auto:true,  pellets:1, mag:Infinity, range:620, col:"#9fe0ff" },
+  shotgun: { name:"Shotgun", dmg:11, rofMs:680, spread:0.16,  speed:1300, recoil:340, auto:false, pellets:7, mag:Infinity, range:430, col:"#ff9d6e" },
+  rifle:   { name:"Rifle",   dmg:34, rofMs:520, spread:0.018, speed:1900, recoil:210, auto:false, pellets:1, mag:Infinity, range:1050,col:"#c9ff8a" }
+};
+const WKEYS = Object.keys(WEAPONS);
+
+// 10 distinct fighter colors + names (index 0 = the player).
+const FIGHTERS = [
+  { name:"YOU",   col:"#5bd6c0" },
+  { name:"Bjorn", col:"#ff6b6b" },
+  { name:"Mira",  col:"#ffd166" },
+  { name:"Kato",  col:"#c792ea" },
+  { name:"Vex",   col:"#7ee787" },
+  { name:"Pyra",  col:"#ff9ff3" },
+  { name:"Dane",  col:"#74c0fc" },
+  { name:"Sol",   col:"#ffa94d" },
+  { name:"Nyx",   col:"#a5d8ff" },
+  { name:"Rook",  col:"#e9c46a" }
+];
+
+// Ragdoll skeleton (point indices). Pose authored upright; physics/collision place it.
+const PT = { HEAD:0, CHEST:1, PELVIS:2, HAND:3, FOOTL:4, FOOTR:5, N:6 };
+// Distance constraints [a,b,stiffness]; rest length captured at spawn.
+const BONES = [
+  [PT.HEAD, PT.CHEST, 1.0],
+  [PT.CHEST, PT.PELVIS, 1.0],
+  [PT.HEAD, PT.PELVIS, 0.6],   // spine stiffener (keeps an upright tendency)
+  [PT.CHEST, PT.HAND, 0.9],
+  [PT.PELVIS, PT.FOOTL, 1.0],
+  [PT.PELVIS, PT.FOOTR, 1.0],
+  [PT.FOOTL, PT.FOOTR, 0.25]   // soft stance width
+];
+
+/* ---------- 2. UTILITIES (pure helpers) ----------------------------------------------- */
+const clamp = (v,a,b)=> v<a?a : v>b?b : v;
+const lerp  = (a,b,t)=> a+(b-a)*t;
+const dist2 = (ax,ay,bx,by)=>{ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; };
+const TAU = Math.PI*2;
+const isFin = Number.isFinite;
+
+// mulberry32 — seeded PRNG carried as explicit state (§5). Never Math.random in the sim.
+function mulberry32(seed){
+  let a = seed>>>0;
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a>>>15), 1 | a);
+    t = (t + Math.imul(t ^ (t>>>7), 61 | t)) ^ t;
+    return ((t ^ (t>>>14)) >>> 0) / 4294967296;
+  };
+}
+// Segment (p->q) vs AABB intersection (slab method) — used for line-of-sight + bullet/world.
+function segAABB(px,py,qx,qy, x,y,w,h){
+  const dx=qx-px, dy=qy-py;
+  let t0=0, t1=1;
+  for(let i=0;i<2;i++){
+    const p = i? dy : dx;
+    const lo = i? y : x;
+    const hi = i? y+h : x+w;
+    const o = i? py : px;
+    if(Math.abs(p) < 1e-9){ if(o<lo || o>hi) return false; }
+    else{
+      let ta=(lo-o)/p, tb=(hi-o)/p;
+      if(ta>tb){ const s=ta; ta=tb; tb=s; }
+      if(ta>t0) t0=ta;
+      if(tb<t1) t1=tb;
+      if(t0>t1) return false;
+    }
+  }
+  return true;
+}
+const pointInBox = (px,py, b)=> px>=b.x && px<=b.x+b.w && py>=b.y && py<=b.y+b.h;
+
+/* ---------- 3. STATE: settings persistence + the one game state object ----------------- */
+const DEFAULT_SETTINGS = { v:1, mute:false, targetKills:15, best:{ kills:0, wins:0 }, matches:0 };
+function loadSettings(){
+  try{
+    const s = Object.assign(structuredClone(DEFAULT_SETTINGS), JSON.parse(localStorage.getItem(LS_KEY))||{});
+    if(s.v!==1){ return structuredClone(DEFAULT_SETTINGS); }   // version gate (migrate-vs-reject)
+    if(!s.best) s.best={kills:0,wins:0};
+    return s;
+  }catch(e){ return structuredClone(DEFAULT_SETTINGS); }       // storage throws in private mode/sandbox
+}
+function saveSettings(){
+  try{ localStorage.setItem(LS_KEY, JSON.stringify(settings)); }catch(e){ /* degrade: keep running in-memory */ }
+}
+let settings = loadSettings();
+
+// The single source-of-truth game state. Everything renders/derives from this.
+let game = null;            // built by newMatch()
+let rng = mulberry32(1);    // sim PRNG (re-seeded per match)
+
+/* ---------- 4. MODEL: world gen + ragdoll factory (pure-ish builders) ------------------ */
+// Procedural village: ground + houses (body + roof) + crates/fences as cover & platforms.
+function buildWorld(seed){
+  const r = mulberry32(seed ^ 0x9e3779b9);
+  const boxes = [];                  // solid AABBs {x,y,w,h, kind}
+  // ground slab
+  boxes.push({ x:-40, y:W.ground, w:W.width+80, h:W.height-W.ground+60, kind:"ground" });
+  // houses spaced across the map
+  let x = 180;
+  const spawns = [];
+  while(x < W.width-260){
+    const hw = 150 + Math.floor(r()*120);
+    const hh = 150 + Math.floor(r()*120);
+    const hx = x, hy = W.ground - hh;
+    boxes.push({ x:hx, y:hy, w:hw, h:hh, kind:"house" });
+    // roof platform sits ON TOP — standable. Slight overhang.
+    boxes.push({ x:hx-12, y:hy-16, w:hw+24, h:16, kind:"roof" });
+    spawns.push({ x:hx+hw/2, y:hy-30 });             // rooftop spawn
+    spawns.push({ x:hx+hw+70, y:W.ground-30 });      // street spawn beside the house
+    // a crate or two for low cover between houses
+    if(r()<0.8){
+      const cw=44+Math.floor(r()*26), cx=hx+hw+34+Math.floor(r()*60);
+      boxes.push({ x:cx, y:W.ground-cw, w:cw, h:cw, kind:"crate" });
+      spawns.push({ x:cx+cw/2, y:W.ground-cw-26 });
+    }
+    x += hw + 150 + Math.floor(r()*120);
+  }
+  // a couple of mid-air plank platforms for verticality
+  for(let i=0;i<4;i++){
+    const pw=120+Math.floor(r()*90);
+    const px=240+Math.floor(r()*(W.width-560));
+    const py=W.ground-200-Math.floor(r()*240);
+    boxes.push({ x:px, y:py, w:pw, h:18, kind:"plank" });
+    spawns.push({ x:px+pw/2, y:py-30 });
+  }
+  spawns.push({ x:90, y:W.ground-30 });
+  spawns.push({ x:W.width-90, y:W.ground-30 });
+  // surfaces = standable top edges (for muscle foot targeting) — derived from solid boxes.
+  const surfaces = boxes.map(b=>({ x1:b.x, x2:b.x+b.w, top:b.y }));
+  return { boxes, surfaces, spawns };
+}
+
+// Highest standable surface at world-x that is at/just below feetY (smallest top >= feetY-slack).
+function groundUnder(world, x, feetY){
+  let best = W.ground;                 // arena floor fallback
+  for(const s of world.surfaces){
+    if(x>=s.x1 && x<=s.x2 && s.top >= feetY-22 && s.top < best) best = s.top;
+  }
+  return best;
+}
+
+// Create one fighter as a verlet ragdoll standing at (x, footY).
+function makeFighter(idx, x, footY){
+  const f = FIGHTERS[idx];
+  // authored upright pose offsets from foot line
+  const p = [];
+  const add = (ox,oy)=>{ const px=x+ox, py=footY+oy; p.push({x:px,y:py,px:px,py:py}); };
+  add(0,-78);   // HEAD
+  add(0,-58);   // CHEST
+  add(0,-38);   // PELVIS
+  add(14,-58);  // HAND (in front of chest)
+  add(-7,-2);   // FOOTL
+  add(7,-2);    // FOOTR
+  // capture rest lengths
+  const bones = BONES.map(([a,b,st])=>{
+    const d = Math.sqrt(dist2(p[a].x,p[a].y,p[b].x,p[b].y));
+    return { a,b, len:d, stiff:st };
+  });
+  return {
+    idx, name:f.name, col:f.col, isPlayer: idx===0,
+    p, bones,
+    hp: BODY_HP, dead:false, deadTimer:0, kills:0, deaths:0,
+    facing: 1, aim: 0, walkPhase: rng()*TAU,
+    move: 0,                  // -1 / 0 / 1 horizontal intent
+    wantJump:false, jumpLock:false,
+    fireCooldown:0, wantFire:false, stagger:0,
+    weapon: idx===0 ? "smg" : WKEYS[1 + Math.floor(rng()*(WKEYS.length-1))],
+    ai: idx===0 ? null : {
+      target:-1, retarget:0, react:0, range:200+rng()*220,
+      aggro:0.4+rng()*0.6, jitter:0.6-rng()*0.4, hop:0
+    }
+  };
+}
+
+// Geometry readouts (no mutation).
+const head = f=> f.p[PT.HEAD];
+const chest= f=> f.p[PT.CHEST];
+const pelvis=f=> f.p[PT.PELVIS];
+const hand = f=> f.p[PT.HAND];
+function bodyCenter(f){ const c=chest(f), pv=pelvis(f); return { x:(c.x+pv.x)/2, y:(c.y+pv.y)/2 }; }
+function alive(f){ return !f.dead; }
+
+// Clear line of sight between two world points (no solid box blocks the segment).
+function losClear(world, ax,ay,bx,by){
+  for(const b of world.boxes){
+    if(b.kind==="ground") continue;                 // ground never blocks horizontal LOS meaningfully
+    if(segAABB(ax,ay,bx,by, b.x,b.y,b.w,b.h)) return false;
+  }
+  return true;
+}
+
+/* ---------- 5. SYSTEMS: physics, combat, AI, particles (mutate state over time) -------- */
+
+// Apply an impulse (px/s) to a point by shifting its previous position (verlet).
+function impulse(pt, ix, iy){ pt.px -= ix*PHYS.FIXED; pt.py -= iy*PHYS.FIXED; }
+
+function stepPhysics(){
+  const dt = PHYS.FIXED, dt2 = dt*dt;
+  const world = game.world;
+  for(const f of game.fighters){
+    const conscious = !f.dead;
+    // 5a. integrate every point (gravity + inertia)
+    for(const pt of f.p){
+      const vx=(pt.x-pt.px)*PHYS.AIR_DAMP;
+      const vy=(pt.y-pt.py)*PHYS.AIR_DAMP;
+      pt.px=pt.x; pt.py=pt.y;
+      pt.x += vx;
+      pt.y += vy + PHYS.G*dt2;
+    }
+    // 5b. muscles — conscious bodies pull toward their target pose (off when dead → full ragdoll)
+    if(conscious) applyMuscles(f, world);
+    f.stagger = Math.max(0, f.stagger-dt);
+  }
+  // 5c. distance constraints (limb lengths) — iterate for stiffness
+  for(let it=0; it<PHYS.CONSTRAINT_ITERS; it++){
+    for(const f of game.fighters) solveBones(f);
+  }
+  // 5d. world collision + soft body-vs-body separation
+  for(const f of game.fighters) collideWorld(f, world);
+  separateBodies();
+  // 5e. bullets advance at the physics substep for clean hit detection
+  stepBullets();
+  stepParticles();
+}
+
+function applyMuscles(f, world){
+  const pv = pelvis(f);
+  const gy = groundUnder(world, pv.x, f.p[PT.FOOTL].y);
+  const grounded = (Math.min(f.p[PT.FOOTL].y, f.p[PT.FOOTR].y) > gy-10);
+  // Muscles can only push against the ground. Airborne → weak authority, and anchor the pose to the
+  // body's OWN position (not the surface below) so a jump isn't yanked back down. (find-bugs L6 fix.)
+  const k = (f.stagger>0 ? PHYS.MUSCLE*0.25 : PHYS.MUSCLE) * (grounded?1:0.32);
+  const baseY = grounded ? gy : pv.y + 38;
+  // stride animation when walking on the ground
+  if(f.move!==0 && grounded){ f.walkPhase += PHYS.FIXED*11; }
+  const swing = Math.sin(f.walkPhase)*PHYS.STRIDE*(f.move!==0?1:0.18);
+  const rx = pv.x;                          // pose centred on the live pelvis x
+  // target pose (authored upright); collision holds feet, so springs make a grounded body STAND.
+  const aimDx = Math.cos(f.aim), aimDy = Math.sin(f.aim);
+  const targets = [
+    [PT.HEAD,  rx,          baseY-78],
+    [PT.CHEST, rx+aimDx*3,  baseY-58],
+    [PT.PELVIS,rx,          baseY-38],
+    [PT.HAND,  chest(f).x+aimDx*20, chest(f).y+aimDy*20],
+    [PT.FOOTL, rx-7+swing,  baseY-2],
+    [PT.FOOTR, rx+7-swing,  baseY-2]
+  ];
+  for(const [i,tx,ty] of targets){
+    const pt=f.p[i];
+    pt.x += (tx-pt.x)*k;
+    pt.y += (ty-pt.y)*k;
+  }
+  // locomotion — impart horizontal velocity to the whole body (muscle effort)
+  if(f.move!==0){
+    const push = f.move*PHYS.WALK_SPEED*PHYS.FIXED*k*2;
+    for(const pt of f.p){ pt.x += push; }
+  }
+  // jump — single impulse on all points while grounded
+  if(f.wantJump && grounded && !f.jumpLock){
+    for(const pt of f.p) impulse(pt, 0, PHYS.JUMP_VY);
+    f.jumpLock=true;
+  }
+  if(!f.wantJump) f.jumpLock=false;
+}
+
+function solveBones(f){
+  for(const bn of f.bones){
+    const a=f.p[bn.a], b=f.p[bn.b];
+    let dx=b.x-a.x, dy=b.y-a.y;
+    let d=Math.sqrt(dx*dx+dy*dy);
+    if(d<1e-6){ dx=0.01; dy=0; d=0.01; }     // divide-by-zero guard (coincident points)
+    const diff=(d-bn.len)/d*0.5*bn.stiff;
+    const ox=dx*diff, oy=dy*diff;
+    a.x+=ox; a.y+=oy; b.x-=ox; b.y-=oy;
+  }
+}
+
+function collideWorld(f, world){
+  for(const pt of f.p){
+    for(const b of world.boxes){
+      if(!pointInBox(pt.x, pt.y, b)) continue;
+      // push out along the least-penetration axis
+      const left = pt.x-b.x, right = (b.x+b.w)-pt.x;
+      const top = pt.y-b.y, bot = (b.y+b.h)-pt.y;
+      const m = Math.min(left,right,top,bot);
+      const vx=pt.x-pt.px, vy=pt.y-pt.py;
+      if(m===top){ pt.y=b.y; pt.py=pt.y+vy*0.0; pt.px=pt.x - vx*PHYS.GROUND_FRICTION; } // land on top
+      else if(m===bot){ pt.y=b.y+b.h; pt.py=pt.y; }
+      else if(m===left){ pt.x=b.x; pt.px=pt.x; }
+      else { pt.x=b.x+b.w; pt.px=pt.x; }
+    }
+    // arena side walls
+    if(pt.x<0){ pt.x=0; pt.px=0; }
+    if(pt.x>W.width){ pt.x=W.width; pt.px=W.width; }
+  }
+}
+
+// Light pelvis-vs-pelvis repulsion so bodies don't fully merge (O(n²), trivial at n=10).
+function separateBodies(){
+  const fs=game.fighters, R=26, R2=R*R;
+  for(let i=0;i<fs.length;i++){
+    const a=pelvis(fs[i]);
+    for(let j=i+1;j<fs.length;j++){
+      const b=pelvis(fs[j]);
+      let dx=b.x-a.x, dy=b.y-a.y, d2=dx*dx+dy*dy;
+      if(d2>0 && d2<R2){
+        const d=Math.sqrt(d2), push=(R-d)/d*0.5;
+        const ox=dx*push, oy=dy*push;
+        a.x-=ox; a.y-=oy; b.x+=ox; b.y+=oy;
+      }
+    }
+  }
+}
+
+// ---- combat ----
+function fireWeapon(f){
+  const w = WEAPONS[f.weapon];
+  if(f.fireCooldown>0 || f.dead) return;
+  f.fireCooldown = w.rofMs/1000;
+  const h = hand(f);
+  for(let i=0;i<w.pellets;i++){
+    const spread = (rng()*2-1)*w.spread;
+    const ang = f.aim + spread;
+    game.bullets.push({
+      x:h.x, y:h.y, px:h.x, py:h.y,
+      vx:Math.cos(ang)*w.speed, vy:Math.sin(ang)*w.speed,
+      dmg:w.dmg, owner:f.idx, life:w.range/w.speed, col:w.col
+    });
+  }
+  // recoil kick on the hand + muzzle flash + sound
+  impulse(h, -Math.cos(f.aim)*w.recoil, -Math.sin(f.aim)*w.recoil);
+  spawnFlash(h.x, h.y, f.aim, w.col);
+  sfxShot(f.weapon);
+}
+
+function stepBullets(){
+  const dt=PHYS.FIXED, fs=game.fighters, world=game.world;
+  const live=[];
+  for(const bl of game.bullets){
+    bl.px=bl.x; bl.py=bl.y;
+    bl.x+=bl.vx*dt; bl.y+=bl.vy*dt;
+    bl.life-=dt;
+    if(bl.life<=0){ continue; }
+    // world hit
+    let hitWorld=false;
+    for(const b of world.boxes){
+      if(b.kind==="ground" && bl.y<W.ground) continue;
+      if(pointInBox(bl.x,bl.y,b) || segAABB(bl.px,bl.py,bl.x,bl.y,b.x,b.y,b.w,b.h)){ hitWorld=true; break; }
+    }
+    if(hitWorld){ spawnSpark(bl.x,bl.y,bl.col); continue; }
+    // fighter hit (segment vs body/head circles)
+    let consumed=false;
+    for(const f of fs){
+      if(f.idx===bl.owner || f.dead) continue;
+      const hd=head(f);
+      const isHead = segCircle(bl.px,bl.py,bl.x,bl.y, hd.x,hd.y, 9);
+      const isBody = isHead || segCircle(bl.px,bl.py,bl.x,bl.y, chest(f).x,chest(f).y, 12)
+                            || segCircle(bl.px,bl.py,bl.x,bl.y, pelvis(f).x,pelvis(f).y, 12);
+      if(isBody){
+        damage(f, bl.dmg, bl.owner, bl.vx, bl.vy, isHead);  // base dmg; headshot ×2 applied in damage()
+        consumed=true; break;
+      }
+    }
+    if(!consumed) live.push(bl);
+  }
+  game.bullets = live;
+}
+// segment(p->q) vs circle(cx,cy,r)
+function segCircle(px,py,qx,qy, cx,cy,r){
+  const dx=qx-px, dy=qy-py;
+  const fx=px-cx, fy=py-cy;
+  const a=dx*dx+dy*dy;
+  if(a<1e-9) return (fx*fx+fy*fy)<=r*r;
+  let t = -(fx*dx+fy*dy)/a; t=clamp(t,0,1);
+  const cxp=px+dx*t-cx, cyp=py+dy*t-cy;
+  return (cxp*cxp+cyp*cyp)<=r*r;
+}
+
+function damage(f, dmg, ownerIdx, bvx, bvy, isHead){
+  const dealt = isHead ? dmg*2 : dmg;   // headshot multiplier — the one place this rule lives
+  f.hp -= dealt;
+  f.stagger = 0.35;
+  // knock the hit limb (impulse scaled by bullet speed)
+  const target = isHead ? head(f) : chest(f);
+  const sp = Math.sqrt(bvx*bvx+bvy*bvy) || 1;
+  impulse(target, bvx/sp*240, bvy/sp*240 - 60);
+  spawnBlood(target.x, target.y, bvx, bvy);
+  sfxHit();
+  if(f.hp<=0 && !f.dead){
+    kill(f, ownerIdx, bvx, bvy);
+  }
+}
+
+function kill(f, ownerIdx, bvx, bvy){
+  f.dead=true; f.deadTimer=RESPAWN_S; f.deaths++;
+  f.move=0; f.wantFire=false;
+  // big ragdoll launch from the killing shot
+  const sp=Math.sqrt(bvx*bvx+bvy*bvy)||1;
+  for(const pt of f.p) impulse(pt, bvx/sp*180, bvy/sp*180-120);
+  spawnBlood(chest(f).x, chest(f).y, bvx, bvy, 14);
+  sfxDeath();
+  const killer = game.fighters[ownerIdx];
+  if(killer && killer.idx!==f.idx){
+    killer.kills++;
+    addKillFeed(killer.name, f.name, killer.col, f.col);
+    if(killer.kills >= game.targetKills){ endMatch(killer); }
+  } else {
+    addKillFeed("☠", f.name, "#888", f.col);   // suicide/world death
+  }
+}
+
+function respawn(f){
+  const world=game.world;
+  const s = world.spawns[Math.floor(rng()*world.spawns.length)];
+  const nf = makeFighter(f.idx, s.x, s.y);      // fresh ragdoll at a spawn point
+  nf.kills=f.kills; nf.deaths=f.deaths; nf.weapon=f.weapon;
+  if(!f.isPlayer) nf.ai=f.ai;
+  game.fighters[f.idx]=nf;
+}
+
+// ---- AI: pick target, navigate to preferred range, aim with lead + spread, shoot on LOS ---
+function stepAI(dt){
+  const fs=game.fighters, world=game.world;
+  for(const f of fs){
+    if(f.isPlayer || f.dead) continue;
+    const ai=f.ai;
+    ai.retarget-=dt; ai.react-=dt; ai.hop-=dt;
+    // (re)acquire nearest living enemy
+    if(ai.target<0 || fs[ai.target].dead || ai.retarget<=0){
+      ai.target=-1; let bestD=Infinity;
+      const me=bodyCenter(f);
+      for(const o of fs){
+        if(o.idx===f.idx || o.dead) continue;
+        const d=dist2(me.x,me.y, bodyCenter(o).x, bodyCenter(o).y);
+        if(d<bestD){ bestD=d; ai.target=o.idx; }
+      }
+      ai.retarget = 0.8+rng()*1.2;
+    }
+    if(ai.target<0){ f.move=0; f.wantFire=false; continue; }
+    const tgt=fs[ai.target];
+    const me=bodyCenter(f), te=bodyCenter(tgt);
+    const dx=te.x-me.x, dy=te.y-me.y;
+    const dist=Math.hypot(dx,dy);
+    const w=WEAPONS[f.weapon];
+    // aim with target-velocity lead + a little jitter; reaction delay throttles re-aim
+    if(ai.react<=0){
+      const tv=pelvis(tgt); const tvx=(tv.x-tv.px)/PHYS.FIXED, tvy=(tv.y-tv.py)/PHYS.FIXED;
+      const lead=clamp(dist/w.speed,0,0.4);
+      const ax=te.x+tvx*lead, ay=te.y+tvy*lead;
+      const want=Math.atan2(ay-me.y, ax-me.x);
+      const jit=(rng()*2-1)*w.spread*ai.jitter*3;
+      f.aim = want+jit;
+      ai.react = 0.06+rng()*0.12*(1.2-ai.aggro);
+    }
+    f.facing = Math.cos(f.aim)>=0 ? 1 : -1;
+    // movement: keep preferred range; flee when low; chase up by jumping
+    const low = f.hp < BODY_HP*0.28;
+    let mv=0;
+    if(low){ mv = dx>0? -1:1; }                       // retreat
+    else if(dist > ai.range+60) mv = dx>0?1:-1;       // approach
+    else if(dist < ai.range-60) mv = dx>0?-1:1;       // back off
+    else mv = (rng()<0.5? (dx>0?1:-1):0)*(rng()<0.3?1:0); // light strafe
+    f.move = mv;
+    // jump: target above, or a wall directly ahead, or an occasional hop
+    const ahead = pelvis(f).x + f.move*30;
+    const gNow = groundUnder(world, pelvis(f).x, f.p[PT.FOOTL].y);
+    const gAhead = groundUnder(world, ahead, f.p[PT.FOOTL].y);
+    const wall = (gAhead < gNow-26) || (dy < -70 && rng()<0.04);
+    if((wall || (ai.hop<=0 && rng()<0.012)) && Math.min(f.p[PT.FOOTL].y,f.p[PT.FOOTR].y)>gNow-12){
+      f.wantJump=true; ai.hop=0.6+rng()*0.8;
+    } else f.wantJump=false;
+    // fire when roughly aimed, in range, LOS clear, off cooldown
+    const aimErr = Math.abs(angDiff(f.aim, Math.atan2(dy,dx)));
+    const canSee = losClear(world, chest(f).x,chest(f).y, te.x,te.y);
+    f.wantFire = !low*1 && dist<w.range && aimErr<0.22 && canSee && f.fireCooldown<=0;
+    if(low && canSee && dist<w.range && aimErr<0.18) f.wantFire=true; // still defend while fleeing
+  }
+}
+function angDiff(a,b){ let d=(a-b)%TAU; if(d>Math.PI)d-=TAU; if(d<-Math.PI)d+=TAU; return d; }
+
+// ---- particles (blood, sparks, muzzle flash, dust) ----
+function spawnBlood(x,y,vx,vy,n){
+  n=n||6; const sp=Math.hypot(vx,vy)||1;
+  for(let i=0;i<n;i++){
+    const a=Math.atan2(vy,vx)+(rng()*2-1)*1.1, s=80+rng()*220;
+    game.particles.push({x,y, vx:Math.cos(a)*s, vy:Math.sin(a)*s-60, life:0.5+rng()*0.5, max:1, col:"#c0182b", r:1.5+rng()*2, g:1});
+  }
+}
+function spawnSpark(x,y,col){
+  for(let i=0;i<5;i++){ const a=rng()*TAU, s=60+rng()*160;
+    game.particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:0.25,max:0.25,col,r:1+rng()*1.5,g:0.3}); }
+}
+function spawnFlash(x,y,ang,col){
+  game.particles.push({x:x+Math.cos(ang)*10, y:y+Math.sin(ang)*10, vx:Math.cos(ang)*40, vy:Math.sin(ang)*40,
+    life:0.06, max:0.06, col, r:5, g:0, flash:1});
+}
+function stepParticles(){
+  const dt=PHYS.FIXED, out=[];
+  for(const p of game.particles){
+    p.life-=dt; if(p.life<=0) continue;
+    p.x+=p.vx*dt; p.y+=p.vy*dt;
+    if(p.g){ p.vy+=PHYS.G*0.5*dt; if(p.y>W.ground){ p.y=W.ground; p.vy*=-0.3; p.vx*=0.6; } }
+    out.push(p);
+  }
+  // bound the particle pool (prune oldest if it ever runs away)
+  game.particles = out.length>900 ? out.slice(out.length-900) : out;
+}
+
+// ---- kill feed ----
+function addKillFeed(killer, victim, kcol, vcol){
+  game.feed.unshift({ killer, victim, kcol, vcol, t:4 });
+  if(game.feed.length>6) game.feed.length=6;
+}
+
+/* ---------- WebAudio SFX (procedural — no asset files, §8). Lazy-init, mutable. -------- */
+let actx=null;
+function audioOn(){
+  if(settings.mute) return false;
+  if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ return false; } }
+  if(actx.state==="suspended") actx.resume();
+  return true;
+}
+function blip(type,freq,dur,vol,sweep){
+  if(!audioOn()) return;
+  const t=actx.currentTime, o=actx.createOscillator(), g=actx.createGain();
+  o.type=type; o.frequency.setValueAtTime(freq,t);
+  if(sweep) o.frequency.exponentialRampToValueAtTime(Math.max(40,freq*sweep), t+dur);
+  g.gain.setValueAtTime(vol,t); g.gain.exponentialRampToValueAtTime(0.0008,t+dur);
+  o.connect(g).connect(actx.destination); o.start(t); o.stop(t+dur);
+}
+function noiseBurst(dur,vol){
+  if(!audioOn()) return;
+  const t=actx.currentTime, n=Math.floor(actx.sampleRate*dur);
+  const buf=actx.createBuffer(1,n,actx.sampleRate), d=buf.getChannelData(0);
+  for(let i=0;i<n;i++) d[i]=(Math.random()*2-1)*(1-i/n);
+  const src=actx.createBufferSource(); src.buffer=buf;
+  const g=actx.createGain(); g.gain.setValueAtTime(vol,t); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+  src.connect(g).connect(actx.destination); src.start(t);
+}
+function sfxShot(wk){ const v=wk==="shotgun"?0.16:0.09; noiseBurst(0.05,v); blip("square", wk==="rifle"?320:520, 0.06, 0.05, 0.4); }
+function sfxHit(){ blip("triangle",180,0.07,0.07,0.5); }
+function sfxDeath(){ blip("sawtooth",140,0.32,0.1,0.25); noiseBurst(0.18,0.06); }
+
+/* ---------- 6. RENDER (reads state only, mutates nothing) ----------------------------- */
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+let VW=0, VH=0, DPR=1;
+function resize(){
+  DPR=Math.min(2, window.devicePixelRatio||1);
+  VW=window.innerWidth; VH=window.innerHeight;
+  canvas.width=Math.floor(VW*DPR); canvas.height=Math.floor(VH*DPR);
+  canvas.style.width=VW+"px"; canvas.style.height=VH+"px";
+}
+window.addEventListener("resize", resize);
+
+function render(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  // sky
+  const sky=ctx.createLinearGradient(0,0,0,VH);
+  sky.addColorStop(0,W.sky1); sky.addColorStop(1,W.sky2);
+  ctx.fillStyle=sky; ctx.fillRect(0,0,VW,VH);
+  if(!game){ return; }
+  const cam=game.camera;
+  // parallax hills
+  drawHills(cam);
+  ctx.save();
+  ctx.translate(-cam.x, -cam.y);
+  drawWorld();
+  for(const p of game.particles) drawParticle(p);
+  for(const f of game.fighters) drawFighter(f);
+  for(const bl of game.bullets) drawBullet(bl);
+  ctx.restore();
+  drawHUD();
+}
+
+function drawHills(cam){
+  ctx.fillStyle="#11221f";
+  const base=VH*0.62, off=-cam.x*0.25 % 420;
+  ctx.beginPath(); ctx.moveTo(-50,VH);
+  for(let x=-50; x<VW+450; x+=420){ const bx=x+off; ctx.lineTo(bx, base); ctx.quadraticCurveTo(bx+210, base-120, bx+420, base); }
+  ctx.lineTo(VW+50,VH); ctx.closePath(); ctx.fill();
+}
+
+function drawWorld(){
+  for(const b of game.world.boxes){
+    if(b.kind==="ground"){ ctx.fillStyle="#23352f"; ctx.fillRect(b.x,b.y,b.w,b.h);
+      ctx.fillStyle="#2e463d"; ctx.fillRect(b.x,b.y,b.w,8); continue; }
+    if(b.kind==="house"){ ctx.fillStyle="#3a2f2a"; ctx.fillRect(b.x,b.y,b.w,b.h);
+      ctx.fillStyle="#2e2622"; for(let wx=b.x+18; wx<b.x+b.w-20; wx+=46){ ctx.fillRect(wx,b.y+24,26,30); }
+      continue; }
+    if(b.kind==="roof"){ ctx.fillStyle="#6d3f33"; ctx.fillRect(b.x,b.y,b.w,b.h); continue; }
+    if(b.kind==="crate"){ ctx.fillStyle="#7a5a36"; ctx.fillRect(b.x,b.y,b.w,b.h);
+      ctx.strokeStyle="#5e4427"; ctx.lineWidth=2; ctx.strokeRect(b.x+1,b.y+1,b.w-2,b.h-2);
+      ctx.beginPath(); ctx.moveTo(b.x,b.y); ctx.lineTo(b.x+b.w,b.y+b.h); ctx.moveTo(b.x+b.w,b.y); ctx.lineTo(b.x,b.y+b.h); ctx.stroke();
+      continue; }
+    // plank
+    ctx.fillStyle="#5a4630"; ctx.fillRect(b.x,b.y,b.w,b.h);
+  }
+}
+
+function drawFighter(f){
+  const a = f.dead ? clamp(f.deadTimer/RESPAWN_S,0.15,1) : 1;
+  ctx.globalAlpha=a;
+  // limbs
+  ctx.strokeStyle=f.col; ctx.lineWidth=5; ctx.lineCap="round";
+  ctx.beginPath();
+  const seg=(i,j)=>{ ctx.moveTo(f.p[i].x,f.p[i].y); ctx.lineTo(f.p[j].x,f.p[j].y); };
+  seg(PT.HEAD,PT.CHEST); seg(PT.CHEST,PT.PELVIS);
+  seg(PT.PELVIS,PT.FOOTL); seg(PT.PELVIS,PT.FOOTR);
+  ctx.stroke();
+  // gun arm (drawn toward hand) + barrel
+  ctx.lineWidth=4; ctx.strokeStyle=f.dead?f.col:"#d8e6e2";
+  ctx.beginPath(); seg(PT.CHEST,PT.HAND); ctx.stroke();
+  if(!f.dead){
+    const h=hand(f), w=WEAPONS[f.weapon];
+    ctx.strokeStyle=w.col; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(h.x,h.y); ctx.lineTo(h.x+Math.cos(f.aim)*15, h.y+Math.sin(f.aim)*15); ctx.stroke();
+  }
+  // head
+  const hd=head(f);
+  ctx.fillStyle=f.col; ctx.beginPath(); ctx.arc(hd.x,hd.y,8,0,TAU); ctx.fill();
+  if(f.isPlayer){ ctx.strokeStyle="#fff"; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(hd.x,hd.y,11,0,TAU); ctx.stroke(); }
+  ctx.globalAlpha=1;
+  // name + health pip above head (not for self)
+  if(!f.dead){
+    ctx.font="11px -apple-system,Segoe UI,sans-serif"; ctx.textAlign="center";
+    ctx.fillStyle=f.isPlayer?"#fff":f.col; ctx.fillText(f.name, hd.x, hd.y-22);
+    const bw=30, hpx=hd.x-bw/2, hpy=hd.y-18, frac=clamp(f.hp/BODY_HP,0,1);
+    ctx.fillStyle="rgba(0,0,0,.5)"; ctx.fillRect(hpx,hpy,bw,4);
+    ctx.fillStyle = frac>0.5?"#7ee787":frac>0.25?"#ffd166":"#ff6b6b";
+    ctx.fillRect(hpx,hpy,bw*frac,4);
+  }
+}
+
+function drawBullet(bl){
+  ctx.strokeStyle=bl.col; ctx.lineWidth=2; ctx.lineCap="round";
+  ctx.beginPath(); ctx.moveTo(bl.px,bl.py); ctx.lineTo(bl.x,bl.y); ctx.stroke();
+}
+function drawParticle(p){
+  const a=clamp(p.life/p.max,0,1);
+  ctx.globalAlpha=a; ctx.fillStyle=p.col;
+  if(p.flash){ ctx.beginPath(); ctx.arc(p.x,p.y,p.r*(1+ (1-a)*2),0,TAU); ctx.fill(); }
+  else { ctx.fillRect(p.x-p.r,p.y-p.r,p.r*2,p.r*2); }
+  ctx.globalAlpha=1;
+}
+
+function drawHUD(){
+  const me=game.fighters[0];
+  // crosshair at mouse
+  ctx.strokeStyle="rgba(255,255,255,.7)"; ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.arc(input.mx,input.my,9,0,TAU);
+  ctx.moveTo(input.mx-14,input.my); ctx.lineTo(input.mx-4,input.my);
+  ctx.moveTo(input.mx+4,input.my); ctx.lineTo(input.mx+14,input.my);
+  ctx.moveTo(input.mx,input.my-14); ctx.lineTo(input.mx,input.my-4);
+  ctx.moveTo(input.mx,input.my+4); ctx.lineTo(input.mx,input.my+14);
+  ctx.stroke();
+  // health + weapon (bottom-left)
+  ctx.textAlign="left"; ctx.font="600 14px -apple-system,Segoe UI,sans-serif";
+  const x=18, y=VH-58;
+  ctx.fillStyle="rgba(8,14,12,.6)"; ctx.fillRect(x-8,y-22,232,52);
+  const w=WEAPONS[me.weapon];
+  if(me.dead){ ctx.fillStyle="#ff6b6b"; ctx.fillText("RESPAWNING… "+me.deadTimer.toFixed(1)+"s", x, y); }
+  else{
+    const frac=clamp(me.hp/BODY_HP,0,1);
+    ctx.fillStyle="rgba(255,255,255,.15)"; ctx.fillRect(x,y-4,200,12);
+    ctx.fillStyle=frac>0.5?"#7ee787":frac>0.25?"#ffd166":"#ff6b6b"; ctx.fillRect(x,y-4,200*frac,12);
+    ctx.fillStyle="#dff"; ctx.fillText(Math.max(0,Math.ceil(me.hp))+" HP", x, y-12);
+  }
+  ctx.fillStyle=w.col; ctx.fillText(w.name, x, y+24);
+  // scoreboard (top-right) — leader + you
+  const board=[...game.fighters].sort((a,b)=>b.kills-a.kills);
+  ctx.textAlign="right"; ctx.font="13px -apple-system,Segoe UI,sans-serif";
+  let by=24;
+  ctx.fillStyle="rgba(8,14,12,.55)"; ctx.fillRect(VW-176,8,168,Math.min(6,board.length)*22+30);
+  ctx.fillStyle="#9fb1ac"; ctx.fillText("FIRST TO "+game.targetKills, VW-16, by); by+=20;
+  for(let i=0;i<Math.min(6,board.length);i++){
+    const f=board[i];
+    ctx.fillStyle=f.col; ctx.fillRect(VW-168,by-9,9,9);
+    ctx.fillStyle=f.isPlayer?"#fff":"#cfe"; ctx.textAlign="left";
+    ctx.fillText(f.name, VW-152, by);
+    ctx.textAlign="right"; ctx.fillStyle="#fff"; ctx.fillText(String(f.kills), VW-16, by);
+    by+=22;
+  }
+  // kill feed (top-left)
+  ctx.textAlign="left"; ctx.font="13px -apple-system,Segoe UI,sans-serif";
+  let fy=24;
+  for(const e of game.feed){
+    ctx.globalAlpha=clamp(e.t,0,1);
+    ctx.fillStyle=e.kcol; ctx.fillText(e.killer, 16, fy);
+    const kw=ctx.measureText(e.killer).width;
+    ctx.fillStyle="#9fb1ac"; ctx.fillText("  ➤  ", 16+kw, fy);
+    const aw=ctx.measureText("  ➤  ").width;
+    ctx.fillStyle=e.vcol; ctx.fillText(e.victim, 16+kw+aw, fy);
+    fy+=20;
+  }
+  ctx.globalAlpha=1;
+  if(game.paused){ ctx.fillStyle="rgba(0,0,0,.35)"; ctx.fillRect(0,0,VW,VH);
+    ctx.fillStyle="#fff"; ctx.font="700 28px -apple-system,Segoe UI,sans-serif"; ctx.textAlign="center";
+    ctx.fillText("Paused — press P", VW/2, VH/2); }
+}
+
+/* ---------- 7. INPUT (events → state intent) ------------------------------------------ */
+const input = { left:false, right:false, jump:false, fire:false, mx:0, my:0, touchAim:null };
+function worldMouse(){ return { x: input.mx + game.camera.x, y: input.my + game.camera.y }; }
+
+window.addEventListener("keydown", e=>{
+  if(e.repeat) return;
+  switch(e.code){
+    case "KeyA": case "ArrowLeft": input.left=true; break;
+    case "KeyD": case "ArrowRight": input.right=true; break;
+    case "KeyW": case "Space": case "ArrowUp": input.jump=true; break;
+    case "KeyP": if(game&&game.phase==="play") game.paused=!game.paused; break;
+    case "KeyR": if(game) startMatch(); break;
+    case "KeyM": toggleMute(); break;
+  }
+  if(["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code)) e.preventDefault();
+});
+window.addEventListener("keyup", e=>{
+  switch(e.code){
+    case "KeyA": case "ArrowLeft": input.left=false; break;
+    case "KeyD": case "ArrowRight": input.right=false; break;
+    case "KeyW": case "Space": case "ArrowUp": input.jump=false; break;
+  }
+});
+canvas.addEventListener("mousemove", e=>{ const r=canvas.getBoundingClientRect(); input.mx=e.clientX-r.left; input.my=e.clientY-r.top; });
+canvas.addEventListener("mousedown", e=>{ if(e.button===0){ input.fire=true; audioOn(); } });
+window.addEventListener("mouseup", e=>{ if(e.button===0) input.fire=false; });
+canvas.addEventListener("contextmenu", e=>e.preventDefault());
+
+// touch controls
+const isTouch = ("ontouchstart" in window) || navigator.maxTouchPoints>0;
+if(isTouch){
+  document.getElementById("touch").style.display="block";
+  canvas.style.cursor="none";
+  const bind=(id,on,off)=>{ const el=document.getElementById(id);
+    el.addEventListener("touchstart",e=>{e.preventDefault();on();},{passive:false});
+    el.addEventListener("touchend",e=>{e.preventDefault();off();},{passive:false}); };
+  bind("tl",()=>input.left=true,()=>input.left=false);
+  bind("tr",()=>input.right=true,()=>input.right=false);
+  bind("tj",()=>input.jump=true,()=>input.jump=false);
+  bind("tf",()=>{input.fire=true;audioOn();},()=>input.fire=false);
+  // aim by touching the canvas (right half)
+  canvas.addEventListener("touchstart",e=>{ const t=e.changedTouches[0]; const r=canvas.getBoundingClientRect();
+    input.mx=t.clientX-r.left; input.my=t.clientY-r.top; },{passive:true});
+  canvas.addEventListener("touchmove",e=>{ const t=e.changedTouches[0]; const r=canvas.getBoundingClientRect();
+    input.mx=t.clientX-r.left; input.my=t.clientY-r.top; },{passive:true});
+}
+
+function applyPlayerInput(){
+  const me=game.fighters[0];
+  if(me.dead){ me.move=0; me.wantFire=false; me.wantJump=false; return; }
+  me.move = (input.left?-1:0) + (input.right?1:0);
+  me.wantJump = input.jump;
+  const wm=worldMouse();
+  me.aim = Math.atan2(wm.y-chest(me).y, wm.x-chest(me).x);
+  me.facing = Math.cos(me.aim)>=0?1:-1;
+  me.wantFire = input.fire;
+}
+
+/* ---------- 8. MAIN LOOP (fixed timestep accumulator) --------------------------------- */
+let last=0, acc=0;
+function frame(ts){
+  requestAnimationFrame(frame);                       // re-arm first (a throw still reschedules)
+  if(!game){ render(); return; }
+  const dt=Math.min(0.25,(ts-last)/1000); last=ts;    // clamp: backgrounded tab returns huge dt
+  if(game.phase==="play" && !game.paused){
+    acc += dt;
+    let n=0;
+    while(acc>=PHYS.FIXED && n<8){ stepFixed(PHYS.FIXED); acc-=PHYS.FIXED; n++; }
+    if(acc>PHYS.FIXED*8) acc=0;                        // hopelessly behind → drop, don't freeze
+  } else { acc=0; }
+  updateCamera(dt);
+  render();
+}
+
+let aiAccum=0;
+function stepFixed(dt){
+  applyPlayerInput();
+  aiAccum+=dt;
+  if(aiAccum>=1/30){ stepAI(aiAccum); aiAccum=0; }     // AI thinks at ~30Hz (perf + reaction feel)
+  // fire intent → weapon, cooldown countdown
+  for(const f of game.fighters){
+    f.fireCooldown=Math.max(0,f.fireCooldown-dt);
+    if(f.wantFire && !f.dead && (WEAPONS[f.weapon].auto || !f.firedThisPress)){
+      if(f.fireCooldown<=0){ fireWeapon(f); if(!WEAPONS[f.weapon].auto) f.firedThisPress=true; }
+    }
+    if(!f.wantFire) f.firedThisPress=false;
+    // respawn timer
+    if(f.dead){ f.deadTimer-=dt; if(f.deadTimer<=0) respawn(f); }
+  }
+  stepPhysics();
+  // age kill feed
+  for(const e of game.feed) e.t-=dt;
+  game.feed = game.feed.filter(e=>e.t>0);
+}
+
+function updateCamera(dt){
+  if(!game) return;
+  const me=game.fighters[0], c=bodyCenter(me);
+  const tx=clamp(c.x-VW/2, 0, Math.max(0,W.width-VW));
+  const ty=clamp(c.y-VH*0.55, -120, Math.max(0,W.height-VH));
+  const k=1-Math.pow(0.001, dt);                       // frame-rate-independent smoothing
+  game.camera.x=lerp(game.camera.x,tx,k);
+  game.camera.y=lerp(game.camera.y,ty,k);
+  if(!isFin(game.camera.x)) game.camera.x=tx;          // NaN guard
+  if(!isFin(game.camera.y)) game.camera.y=ty;
+}
+
+/* ---------- 9. WIRING (matches, menu, settings) --------------------------------------- */
+function newMatch(seed){
+  rng = mulberry32(seed);
+  const world = buildWorld(seed);
+  const fighters=[];
+  // unique spawn per fighter (shuffle spawn list with the seeded rng)
+  const sp=[...world.spawns];
+  for(let i=sp.length-1;i>0;i--){ const j=Math.floor(rng()*(i+1)); const t=sp[i]; sp[i]=sp[j]; sp[j]=t; }
+  for(let i=0;i<COUNT;i++){ const s=sp[i%sp.length]; fighters.push(makeFighter(i, s.x, s.y)); }
+  return {
+    seed, world, fighters, bullets:[], particles:[], feed:[],
+    camera:{x:0,y:0}, phase:"play", paused:false,
+    targetKills: settings.targetKills, winner:null, elapsed:0
+  };
+}
+function startMatch(){
+  const seed = (Date.now() ^ Math.floor(Math.random()*0x7fffffff))>>>0;  // match seed (menu only — not in sim)
+  game = newMatch(seed);
+  game.phase="play"; game.paused=false; acc=0; aiAccum=0;
+  document.getElementById("overlay").classList.add("hide");
+}
+function endMatch(winner){
+  game.phase="over"; game.winner=winner;
+  // persist stats
+  settings.matches++;
+  const me=game.fighters[0];
+  settings.best.kills=Math.max(settings.best.kills, me.kills);
+  if(winner.isPlayer) settings.best.wins++;
+  saveSettings();
+  showOverlay(true);
+}
+
+function showOverlay(isOver){
+  const ov=document.getElementById("overlay");
+  ov.classList.remove("hide");
+  const sub=document.getElementById("ovSub");
+  const board=document.getElementById("finalBoard");
+  const startBtn=document.getElementById("startBtn");
+  if(isOver && game){
+    const w=game.winner;
+    document.querySelector(".panel h1").innerHTML = w.isPlayer
+      ? 'You <span class="accent">won!</span>' : (w.name+' <span class="accent">wins</span>');
+    sub.textContent = "First to "+game.targetKills+" kills. Your best: "+settings.best.kills+
+      " kills · "+settings.best.wins+" wins · "+settings.matches+" matches played.";
+    document.getElementById("ovKeys").classList.add("hide");
+    const rows=[...game.fighters].sort((a,b)=>b.kills-a.kills).map(f=>
+      `<tr><td><span class="swatch" style="background:${f.col}"></span>${f.name}</td>`+
+      `<td class="k">${f.kills}</td><td style="color:#7d8d88">${f.deaths} d</td></tr>`).join("");
+    board.innerHTML = "<table>"+rows+"</table>";
+    startBtn.textContent="▶ Play again";
+  } else {
+    document.querySelector(".panel h1").innerHTML = 'Ragdoll <span class="accent">Village</span>';
+    document.getElementById("ovKeys").classList.remove("hide");
+    board.innerHTML = settings.matches? ("<div style='margin-top:8px'>Best: "+settings.best.kills+
+      " kills · "+settings.best.wins+" wins</div>") : "";
+    startBtn.textContent="▶ Start match";
+  }
+}
+function toggleMute(){
+  settings.mute=!settings.mute; saveSettings();
+  document.getElementById("muteBtn").textContent = settings.mute? "🔇 Muted":"🔊 Sound";
+}
+
+/* ---------- 10. BOOT ------------------------------------------------------------------ */
+function boot(){
+  resize();
+  // wire menu controls
+  const tk=document.getElementById("targetKills"), tkVal=document.getElementById("tkVal");
+  tk.value=settings.targetKills; tkVal.textContent=settings.targetKills;
+  tk.addEventListener("input", ()=>{ settings.targetKills=+tk.value; tkVal.textContent=tk.value; saveSettings(); });
+  document.getElementById("startBtn").addEventListener("click", startMatch);
+  document.getElementById("muteBtn").textContent = settings.mute? "🔇 Muted":"🔊 Sound";
+  document.getElementById("muteBtn").addEventListener("click", toggleMute);
+  showOverlay(false);
+  requestAnimationFrame(frame);
+  // headless self-test on demand (?selftest)
+  if(location.search.includes("selftest")) setTimeout(runSelfTest, 50);
+}
+try{ boot(); }
+catch(e){ document.body.innerHTML='<div class="overlay"><div class="panel"><h1>Failed to start</h1>'+
+  '<div class="sub">'+(e&&e.message||e)+'</div></div></div>'; }
+
+/* ---------- 11. SELF-TEST (zero-dep, drives the real sim headless; non-zero exit) ------ */
+function runSelfTest(){
+  let fails=0;
+  const check=(c,n)=>{ console.log((c?"PASS":"FAIL")+": "+n); if(!c) fails++; };
+  const g0=newMatch(12345); game=g0;
+  check(g0.fighters.length===COUNT, "spawns exactly "+COUNT+" fighters");
+  // determinism: same seed → identical first pelvis x for fighter 1
+  const a=newMatch(777), b=newMatch(777);
+  check(Math.abs(pelvis(a.fighters[1]).x - pelvis(b.fighters[1]).x)<1e-9, "world+spawn deterministic for a seed");
+  // run 600 physics substeps; assert finiteness + standing (heads above feet)
+  game=g0; let allFinite=true, standing=0;
+  for(let i=0;i<600;i++) stepFixed(PHYS.FIXED);
+  for(const f of g0.fighters){
+    for(const pt of f.p){ if(!isFin(pt.x)||!isFin(pt.y)) allFinite=false; }
+    if(!f.dead && head(f).y < pelvis(f).y) standing++;       // head above pelvis = upright
+  }
+  check(allFinite, "no NaN/Infinity in any ragdoll point after 600 steps");
+  check(standing>=COUNT*0.6, "most conscious fighters remain upright (muscles work): "+standing+"/"+COUNT);
+  // combat: a point-blank shot drops HP and a lethal volley kills + ragdolls
+  const t=g0.fighters[2], before=t.hp;
+  damage(t, 30, 1, 1500, 0, false);
+  check(t.hp===before-30, "body shot subtracts exact damage");
+  damage(t, 5, 1, 1500, 0, true);
+  check(t.hp===before-30-10, "headshot doubles damage (5→10)");
+  let safety=0; while(!t.dead && safety++<20) damage(t, 50, 1, 1500, 0, false);
+  check(t.dead && t.hp<=0, "lethal damage kills + flags dead");
+  // kill credited to owner
+  check(g0.fighters[1].kills>=1, "kill credited to the shooter");
+  // bullets never carry NaN
+  fireWeapon(g0.fighters[0]); let blOk=true;
+  for(const bl of g0.bullets){ if(!isFin(bl.x)||!isFin(bl.vx)) blOk=false; }
+  check(blOk, "fired bullets have finite position + velocity");
+  // win condition
+  const w=newMatch(9); game=w; w.targetKills=2; w.fighters[3].kills=1;
+  kill(w.fighters[5], 3, 1000,0);
+  check(w.phase==="over" && w.winner===w.fighters[3], "reaching target kills ends the match");
+  console.log(fails? ("SELF-TEST FAILED ("+fails+")") : "SELF-TEST PASSED");
+  // surface result on screen too
+  const d=document.createElement("div"); d.className="overlay";
+  d.innerHTML='<div class="panel"><h1>'+(fails?'Self-test FAILED':'Self-test PASSED')+
+    '</h1><div class="sub">'+(fails+" failures — see console")+'</div></div>';
+  document.body.appendChild(d);
+  if(window.__exit) window.__exit(fails?1:0);
+  return fails;
+}
+window.runSelfTest = runSelfTest;
+</script>
+
+<!-- service worker (network-first; offline fallback) -->
+<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}</script>
+<!-- resume-reload: refetch on focus; reload only if the build token changed (stamped at publish) -->
+<script>
+(function(){
+  var BUILD="20260614115813";
+  if(BUILD.indexOf("APP_BUILD")>-1) return;             // unstamped (local/dev) -> disabled
+  var busy=false;
+  function check(){
+    if(busy||document.visibilityState!=="visible"||!navigator.onLine) return;
+    busy=true;
+    fetch("./?_au="+Date.now(),{cache:"no-store"})
+      .then(function(r){ return r.ok? r.text():null; })
+      .then(function(t){
+        if(t){ var m=t.match(/var BUILD="([^"]+)"/);
+          if(m && m[1]!==BUILD && m[1].indexOf("APP_BUILD")<0){ location.reload(); return; } }
+        busy=false;
+      })
+      .catch(function(){ busy=false; });
+  }
+  document.addEventListener("visibilitychange",check);
+  window.addEventListener("pageshow",check);
+  window.addEventListener("focus",check);
+})();
+</script>
+</body>
+</html>
