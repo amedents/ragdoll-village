@@ -162,7 +162,8 @@ const FIGHTERS = [
   {name:"Nyx",col:0xa5d8ff},{name:"Rook",col:0xe9c46a}
 ];
 const hexCss = h=> "#"+h.toString(16).padStart(6,"0");
-const SKY = 0x9fc7d8, GROUND_COL = 0x3f5a44;
+// Golden-hour palette — warm low sun for long appealing shadows, hazy warm horizon.
+const SKY_TOP = 0x5b86b5, SKY_HORIZON = 0xf3d2a0, FOG_COL = 0xe7cda6, GROUND_COL = 0x586b3a;
 
 /* ---------- 2. UTILITIES (pure) ------------------------------------------------------- */
 const clamp=(v,a,b)=> v<a?a : v>b?b : v;
@@ -523,7 +524,7 @@ function sfxDeath(){ blip("sawtooth",140,0.32,0.1,0.25); noiseBurst(0.18,0.06); 
 /* ===================================================================================== */
 const canvas=document.getElementById("game");
 let renderer=null, scene=null, camera=null;
-let worldGroup=null, particlePoints=null, bulletLines=null;
+let worldGroup=null, particlePoints=null, bulletLines=null, cloudGroup=null;
 const actors=[];                     // per-fighter THREE groups (index-aligned with fighters)
 const cam = { yaw:0, pitch:0.15, dist:7.0 };
 const _up=new THREE.Vector3(0,1,0), _v=new THREE.Vector3(), _v2=new THREE.Vector3(), _q=new THREE.Quaternion();
@@ -531,20 +532,88 @@ const _up=new THREE.Vector3(0,1,0), _v=new THREE.Vector3(), _v2=new THREE.Vector
 function initThree(){
   renderer=new THREE.WebGLRenderer({canvas, antialias:true});
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio||1));
+  renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  // ACES tonemap + sRGB output: PBR materials look right & the warm sun reads as golden-hour, not blown-out.
+  renderer.outputColorSpace=THREE.SRGBColorSpace;
+  renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.18;
   scene=new THREE.Scene();
-  scene.background=new THREE.Color(SKY);
-  scene.fog=new THREE.Fog(SKY, 45, 130);
-  camera=new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, 0.1, 400);
-  scene.add(new THREE.HemisphereLight(0xcfe6ff, 0x44503e, 1.0));
-  const sun=new THREE.DirectionalLight(0xffffff, 0.65); sun.position.set(40,70,25); scene.add(sun);
+  scene.fog=new THREE.Fog(FOG_COL, 55, 165);
+  camera=new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 600);
+
+  // --- sky dome: a back-side sphere with a vertical gradient (zenith→horizon). Added once; survives matches.
+  const skyGeo=new THREE.SphereGeometry(480, 32, 16);
+  const skyMat=new THREE.ShaderMaterial({
+    side:THREE.BackSide, depthWrite:false, fog:false,
+    uniforms:{ top:{value:new THREE.Color(SKY_TOP)}, hor:{value:new THREE.Color(SKY_HORIZON)},
+               sunDir:{value:new THREE.Vector3(0.6,0.45,0.66).normalize()} },
+    vertexShader:`varying vec3 vW; void main(){ vW=normalize(position); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader:`varying vec3 vW; uniform vec3 top; uniform vec3 hor; uniform vec3 sunDir;
+      void main(){ float h=clamp(vW.y*1.15+0.05,0.0,1.0); vec3 c=mix(hor, top, pow(h,0.7));
+        float s=pow(max(dot(normalize(vW),normalize(sunDir)),0.0), 64.0);   // soft sun glow toward the light
+        c+=vec3(1.0,0.85,0.6)*s*0.8; gl_FragColor=vec4(c,1.0); }`
+  });
+  const sky=new THREE.Mesh(skyGeo, skyMat); sky.frustumCulled=false; scene.add(sky);
+
+  // --- lighting: warm shadow-casting sun + cool sky fill + a soft bounce from the opposite side.
+  scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x55702f, 0.95));
+  const sun=new THREE.DirectionalLight(0xfff0d4, 2.5); sun.position.set(62, 78, 44);
+  sun.castShadow=true; sun.shadow.mapSize.set(2048,2048);
+  const sc=sun.shadow.camera; sc.left=-78; sc.right=78; sc.top=78; sc.bottom=-78; sc.near=1; sc.far=320;
+  sun.shadow.bias=-0.00035; sun.shadow.normalBias=0.025; scene.add(sun);
+  const fill=new THREE.DirectionalLight(0x9fb8e0, 0.35); fill.position.set(-50,40,-30); scene.add(fill);
   resize();
 }
-function makeGridTexture(){
-  const c=document.createElement("canvas"); c.width=c.height=256; const x=c.getContext("2d");
-  x.fillStyle="#3f5a44"; x.fillRect(0,0,256,256);
-  x.strokeStyle="rgba(255,255,255,.07)"; x.lineWidth=2;
-  for(let i=0;i<=256;i+=32){ x.beginPath(); x.moveTo(i,0); x.lineTo(i,256); x.moveTo(0,i); x.lineTo(256,i); x.stroke(); }
-  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(ARENA, ARENA); return t;
+// ---- procedural texture factory (CanvasTexture; deterministic via a small local PRNG so look is stable)
+function canvasTex(size, draw, {repeat=1, srgb=true}={}){
+  const c=document.createElement("canvas"); c.width=c.height=size; const x=c.getContext("2d");
+  draw(x, size); const t=new THREE.CanvasTexture(c);
+  if(repeat!==1){ t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(repeat,repeat); }
+  if(srgb) t.colorSpace=THREE.SRGBColorSpace; t.anisotropy=4; return t;
+}
+function makeGroundTexture(){
+  return canvasTex(512,(x,s)=>{
+    const r=mulberry32(0xA11CE);
+    x.fillStyle="#65883a"; x.fillRect(0,0,s,s);                     // fresher grass green
+    for(let i=0;i<5600;i++){ const g=r(); const sh=70+g*80|0;
+      x.fillStyle=`rgba(${50+sh*0.5|0},${90+sh|0},${40+sh*0.4|0},0.5)`;
+      x.fillRect(r()*s, r()*s, 1+r()*2, 1+r()*3); }                 // grass speckle (greener)
+    for(let i=0;i<16;i++){ x.fillStyle=`rgba(132,110,68,${0.08+r()*0.08})`;    // fewer, lighter dirt patches
+      x.beginPath(); x.ellipse(r()*s,r()*s, 14+r()*36, 10+r()*26, r()*6, 0, 7); x.fill(); }
+  }, {repeat:10});
+}
+function makeWallTexture(){
+  return canvasTex(256,(x,s)=>{
+    x.fillStyle="#d8c39a"; x.fillRect(0,0,s,s);                      // plaster
+    const r=mulberry32(7);
+    for(let i=0;i<2600;i++){ x.fillStyle=`rgba(150,130,95,${r()*0.18})`; x.fillRect(r()*s,r()*s,2,2); }
+    x.strokeStyle="#6b4a2e"; x.lineWidth=12;                          // timber frame (tudor-ish)
+    x.strokeRect(6,6,s-12,s-12);
+    x.beginPath(); x.moveTo(s/2,6); x.lineTo(s/2,s-6); x.moveTo(6,s/2); x.lineTo(s-6,s/2); x.stroke();
+    // a shuttered window per quadrant-ish
+    x.fillStyle="#33424f"; x.fillRect(s*0.60,s*0.16,s*0.26,s*0.30);
+    x.strokeStyle="#2a2018"; x.lineWidth=8; x.strokeRect(s*0.60,s*0.16,s*0.26,s*0.30);
+    x.beginPath(); x.moveTo(s*0.73,s*0.16); x.lineTo(s*0.73,s*0.46); x.moveTo(s*0.60,s*0.31); x.lineTo(s*0.86,s*0.31); x.stroke();
+    x.fillStyle="#5a3b22"; x.fillRect(s*0.14,s*0.56,s*0.22,s*0.40);   // door
+    x.fillStyle="#caa54a"; x.beginPath(); x.arc(s*0.33,s*0.76,4,0,7); x.fill();
+  });
+}
+function makeRoofTexture(){
+  return canvasTex(128,(x,s)=>{
+    x.fillStyle="#9e4d3a"; x.fillRect(0,0,s,s);
+    for(let row=0;row<8;row++){ const y=row*s/8, off=(row%2)*s/12;
+      for(let cx=-1;cx<7;cx++){ const px=cx*s/6+off;
+        const g=ctx2grad(x,px,y,s/6,s/8); x.fillStyle=g; x.beginPath();
+        x.moveTo(px,y+s/8); x.lineTo(px,y+s/16); x.quadraticCurveTo(px+s/12,y,px+s/6,y+s/16); x.lineTo(px+s/6,y+s/8); x.fill(); }
+    }
+  }, {repeat:2});
+}
+function ctx2grad(x,px,py,w,h){ const g=x.createLinearGradient(px,py,px,py+h); g.addColorStop(0,"#b25a44"); g.addColorStop(1,"#7d3a2c"); return g; }
+function makeWoodTexture(col0,col1){
+  return canvasTex(128,(x,s)=>{
+    x.fillStyle=col0; x.fillRect(0,0,s,s); const r=mulberry32(13);
+    for(let i=0;i<4;i++){ x.fillStyle=col1; x.fillRect(0,i*s/4,s,2); }   // plank seams
+    for(let i=0;i<900;i++){ x.fillStyle=`rgba(60,40,20,${r()*0.12})`; x.fillRect(r()*s,r()*s,r()*8,1); } // grain
+  });
 }
 const _disposables=[];
 function disposeGroup(g){ if(!g) return; g.traverse(o=>{ if(o.geometry) o.geometry.dispose();
@@ -559,17 +628,26 @@ function buildScene(){
   if(bulletLines){ scene.remove(bulletLines); disposeGroup(bulletLines); }
 
   worldGroup=new THREE.Group(); scene.add(worldGroup);
-  // ground
-  const gmat=new THREE.MeshLambertMaterial({map:makeGridTexture()});
-  const ground=new THREE.Mesh(new THREE.PlaneGeometry(ARENA*2,ARENA*2), gmat);
-  ground.rotation.x=-Math.PI/2; worldGroup.add(ground);
-  // village boxes
-  const matFor={ house:0x8a6a4a, roof:0x9e4d3a, crate:0xb08a4e, plank:0x7a5e3c, post:0x5a4630 };
+  // ground — PBR, receives the sun's shadows. Flat at y=0 (physics depends on that — do NOT displace).
+  const ground=new THREE.Mesh(new THREE.PlaneGeometry(ARENA*2+40,ARENA*2+40),
+    new THREE.MeshStandardMaterial({map:makeGroundTexture(), roughness:1, metalness:0}));
+  ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; worldGroup.add(ground);
+
+  // per-kind shared materials (one texture each, reused across all boxes of that kind — memory + perf).
+  const wallTex=makeWallTexture(), roofTex=makeRoofTexture();
+  const kindMat={
+    house: new THREE.MeshStandardMaterial({map:wallTex, roughness:0.92, metalness:0}),
+    roof:  new THREE.MeshStandardMaterial({map:roofTex, roughness:0.85, metalness:0}),
+    crate: new THREE.MeshStandardMaterial({map:makeWoodTexture("#b08a4e","#8a6a37"), roughness:0.8, metalness:0.02}),
+    plank: new THREE.MeshStandardMaterial({map:makeWoodTexture("#7a5e3c","#5c4630"), roughness:0.85, metalness:0}),
+    post:  new THREE.MeshStandardMaterial({color:0x5a4630, roughness:0.9, metalness:0})
+  };
   for(const b of game.world.boxes){
-    const m=new THREE.Mesh(new THREE.BoxGeometry(b.w,b.h,b.d),
-      new THREE.MeshLambertMaterial({color: matFor[b.kind]??0x888888}));
-    m.position.set(b.x+b.w/2, b.y+b.h/2, b.z+b.d/2); worldGroup.add(m);
+    const m=new THREE.Mesh(new THREE.BoxGeometry(b.w,b.h,b.d), kindMat[b.kind]||kindMat.post);
+    m.position.set(b.x+b.w/2, b.y+b.h/2, b.z+b.d/2);
+    m.castShadow=true; m.receiveShadow=true; worldGroup.add(m);
   }
+  buildDecor();   // trees, rocks, boundary wall, clouds — pure scenery (no collision), deterministic from seed
   // fighters
   for(const f of game.fighters) actors.push(buildActor(f));
   // particle cloud (Points + dynamic buffer — §7 typed arrays)
@@ -582,8 +660,63 @@ function buildScene(){
   const BMAX=300, bg=new THREE.BufferGeometry();
   bg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(BMAX*2*3),3));
   bg.setAttribute("color", new THREE.BufferAttribute(new Float32Array(BMAX*2*3),3));
-  bulletLines=new THREE.LineSegments(bg, new THREE.LineBasicMaterial({vertexColors:true}));
+  bulletLines=new THREE.LineSegments(bg, new THREE.LineBasicMaterial({vertexColors:true,
+    transparent:true, blending:THREE.AdditiveBlending, depthWrite:false}));  // glowing tracers
   bulletLines.frustumCulled=false; scene.add(bulletLines);
+}
+// Decorative scenery — NOT collision geometry (kept out of the physics model deliberately so gameplay
+// stays exactly as the verified self-test covers). Deterministic from the world seed → stable look.
+function nearBox(x,z,margin){
+  for(const b of game.world.boxes){ if(b.kind==="roof"||b.kind==="plank") continue;
+    if(x>=b.x-margin && x<=b.x+b.w+margin && z>=b.z-margin && z<=b.z+b.d+margin) return true; }
+  return false;
+}
+function buildDecor(){
+  const r=mulberry32(game.world.seed ^ 0x515ee7);
+  const A=ARENA;
+  // shared geometries/materials (reused across every instance — no per-tree allocation)
+  const trunkGeo=new THREE.CylinderGeometry(0.18,0.26,1,7);
+  const trunkMat=new THREE.MeshStandardMaterial({color:0x5b3f27, roughness:0.95});
+  const leafGeo=new THREE.IcosahedronGeometry(1,1);
+  const leafMats=[0x4e7d3a,0x5f8f3e,0x6fa048,0x42702f].map(c=>new THREE.MeshStandardMaterial({color:c, roughness:0.9, flatShading:true}));
+  const rockGeo=new THREE.DodecahedronGeometry(1,0);
+  const rockMat=new THREE.MeshStandardMaterial({color:0x8a8d86, roughness:1, flatShading:true});
+  // trees — scattered in the open, away from buildings and the central spawn
+  let placed=0, tries=0;
+  while(placed<26 && tries++<400){
+    const x=(r()*2-1)*(A-4), z=(r()*2-1)*(A-4);
+    if(Math.hypot(x,z)<6) continue; if(nearBox(x,z,2.4)) continue;
+    const h=2.6+r()*2.6, tw=0.7+r()*0.5;
+    const trunk=new THREE.Mesh(trunkGeo, trunkMat);
+    trunk.scale.set(tw,h,tw); trunk.position.set(x,h/2,z); trunk.castShadow=true; worldGroup.add(trunk);
+    const n=2+(r()*2|0);
+    for(let i=0;i<n;i++){ const leaf=new THREE.Mesh(leafGeo, leafMats[r()*leafMats.length|0]);
+      const s=1.1+r()*1.0; leaf.scale.set(s,s*0.9,s);
+      leaf.position.set(x+(r()*2-1)*0.9, h+0.4+i*0.7+r()*0.4, z+(r()*2-1)*0.9);
+      leaf.castShadow=true; worldGroup.add(leaf); }
+    placed++;
+  }
+  // rocks — low scatter
+  for(let i=0;i<14;i++){ const x=(r()*2-1)*(A-3), z=(r()*2-1)*(A-3);
+    if(nearBox(x,z,1.5)) continue; const s=0.4+r()*0.9;
+    const rk=new THREE.Mesh(rockGeo, rockMat); rk.scale.set(s,s*0.7,s*1.1);
+    rk.rotation.set(r()*6,r()*6,r()*6); rk.position.set(x,s*0.35,z);
+    rk.castShadow=true; rk.receiveShadow=true; worldGroup.add(rk); }
+  // boundary stone wall ring at the arena edge (players clamp here; this makes the edge intentional)
+  const wallMat=new THREE.MeshStandardMaterial({color:0x787169, roughness:1, flatShading:true});
+  const seg=(w,d,px,pz)=>{ const m=new THREE.Mesh(new THREE.BoxGeometry(w,1.4,d), wallMat);
+    m.position.set(px,0.7,pz); m.castShadow=true; m.receiveShadow=true; worldGroup.add(m); };
+  seg(A*2+2,1, 0, A); seg(A*2+2,1, 0,-A); seg(1,A*2+2, A,0); seg(1,A*2+2,-A,0);
+  // clouds — soft white puffs, no shadow, drift handled in render via group offset
+  cloudGroup=new THREE.Group(); worldGroup.add(cloudGroup);
+  const puffGeo=new THREE.IcosahedronGeometry(1,1);
+  const puffMat=new THREE.MeshStandardMaterial({color:0xffffff, roughness:1, emissive:0x9fb0c0, emissiveIntensity:0.15, fog:false});
+  for(let i=0;i<9;i++){ const cl=new THREE.Group();
+    const cx=(r()*2-1)*A, cy=42+r()*22, cz=(r()*2-1)*A;
+    const pn=3+(r()*3|0);
+    for(let j=0;j<pn;j++){ const p=new THREE.Mesh(puffGeo,puffMat); const s=5+r()*6;
+      p.scale.set(s,s*0.6,s); p.position.set((r()*2-1)*8,(r()*2-1)*2,(r()*2-1)*8); cl.add(p); }
+    cl.position.set(cx,cy,cz); cloudGroup.add(cl); }
 }
 function nameSprite(text, colHex){
   const c=document.createElement("canvas"); c.width=256; c.height=64; const x=c.getContext("2d");
@@ -597,18 +730,23 @@ function nameSprite(text, colHex){
 function buildActor(f){
   const g=new THREE.Group(); scene.add(g);
   const col=f.col;
-  const limbMat=new THREE.MeshLambertMaterial({color:col});
-  const limb=()=> new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.09,1,8), limbMat);
+  const limbMat=new THREE.MeshStandardMaterial({color:col, roughness:0.62, metalness:0.05});
+  const limb=()=>{ const m=new THREE.Mesh(new THREE.CylinderGeometry(0.11,0.11,1,10), limbMat); m.castShadow=true; return m; };
   const spine1=limb(), spine2=limb(), legL=limb(), legR=limb();
-  const armMat=new THREE.MeshLambertMaterial({color:0xdfe9e6}); const arm=new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.07,1,8), armMat);
-  const headM=new THREE.Mesh(new THREE.SphereGeometry(0.2,12,10), new THREE.MeshLambertMaterial({color:col}));
-  const gunM=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.1,0.1), new THREE.MeshLambertMaterial({color:WEAPONS[f.weapon].col}));
-  const torsoM=new THREE.Mesh(new THREE.SphereGeometry(0.26,10,8), new THREE.MeshLambertMaterial({color:col})); // chest mass
-  const shadow=new THREE.Mesh(new THREE.CircleGeometry(0.5,16), new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0.28}));
+  const armMat=new THREE.MeshStandardMaterial({color:0xe7eeeb, roughness:0.6, metalness:0.05});
+  const arm=new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.08,1,10), armMat); arm.castShadow=true;
+  // joint caps round off the limbs (verlet points rendered as spheres) → reads as a doll, not pipes
+  const jointGeo=new THREE.SphereGeometry(0.13,10,8);
+  const joints=[]; for(let i=0;i<PT.N;i++){ const jm=new THREE.Mesh(jointGeo, limbMat); jm.castShadow=true; joints.push(jm); g.add(jm); }
+  const headM=new THREE.Mesh(new THREE.SphereGeometry(0.22,16,12), new THREE.MeshStandardMaterial({color:0xe8c49a, roughness:0.75})); headM.castShadow=true; // skin
+  const capM=new THREE.Mesh(new THREE.SphereGeometry(0.235,16,12,0,TAU,0,Math.PI*0.55), new THREE.MeshStandardMaterial({color:col, roughness:0.6})); capM.castShadow=true; // team-colour cap
+  const gunM=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.12,0.12), new THREE.MeshStandardMaterial({color:0x2b2f33, roughness:0.45, metalness:0.65, emissive:WEAPONS[f.weapon].col, emissiveIntensity:0.18})); gunM.castShadow=true;
+  const torsoM=new THREE.Mesh(new THREE.SphereGeometry(0.3,14,10), new THREE.MeshStandardMaterial({color:col, roughness:0.6, metalness:0.05})); torsoM.castShadow=true; // chest mass
+  const shadow=new THREE.Mesh(new THREE.CircleGeometry(0.5,16), new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:0.22}));
   shadow.rotation.x=-Math.PI/2;
-  [spine1,spine2,legL,legR,arm,headM,gunM,torsoM,shadow].forEach(o=>g.add(o));
+  [spine1,spine2,legL,legR,arm,headM,capM,gunM,torsoM,shadow].forEach(o=>g.add(o));
   const sprite = f.isPlayer ? null : nameSprite(f.name, col); if(sprite) g.add(sprite);
-  return { group:g, spine1,spine2,legL,legR,arm,headM,gunM,torsoM,shadow,sprite, mat:limbMat };
+  return { group:g, spine1,spine2,legL,legR,arm,headM,capM,gunM,torsoM,shadow,sprite,joints, mat:limbMat };
 }
 function setLimb(mesh,a,b,r){
   _v.set(b.x-a.x,b.y-a.y,b.z-a.z); const len=_v.length()||1e-4;
@@ -624,18 +762,22 @@ function syncActor(f, ac){
   setLimb(ac.arm, chest(f), hand(f),1);
   ac.headM.position.set(head(f).x,head(f).y,head(f).z);
   ac.torsoM.position.set(chest(f).x,chest(f).y,chest(f).z);
+  // joint caps sit on each verlet point (rounds the limb ends)
+  for(let i=0;i<PT.N;i++){ const p=f.p[i]; ac.joints[i].position.set(p.x,p.y,p.z); }
+  // cap tilts toward the body-up axis (head→chest reversed) so it stays on the crown
+  const hd=head(f), ch=chest(f); _v.set(hd.x-ch.x,hd.y-ch.y,hd.z-ch.z).normalize();
+  ac.capM.position.set(hd.x,hd.y,hd.z); ac.capM.quaternion.setFromUnitVectors(_up,_v);
   // gun at hand, oriented along aim
   const h=hand(f); ac.gunM.visible=!dead;
   if(!dead){ ac.gunM.position.set(h.x+f.aimDir.x*0.2, h.y+f.aimDir.y*0.2, h.z+f.aimDir.z*0.2);
     _v.set(f.aimDir.x,f.aimDir.y,f.aimDir.z); _v2.set(1,0,0); ac.gunM.quaternion.setFromUnitVectors(_v2,_v.normalize()); }
-  // blob shadow under pelvis (on ground / surface)
+  // faint contact blob under pelvis (the sun shadow does the heavy lifting; this just grounds fast moves)
   const pv=pelvis(f), gy=groundUnder(game.world, pv.x, pv.z, Math.min(f.p[PT.FOOTL].y,f.p[PT.FOOTR].y));
-  ac.shadow.position.set(pv.x, gy+0.02, pv.z); ac.shadow.material.opacity = (dead?0.18:0.28)*op;
-  // material alpha for fade — Lambert lacks free opacity unless flagged; toggle transparent on death
+  ac.shadow.position.set(pv.x, gy+0.02, pv.z); ac.shadow.material.opacity = (dead?0.12:0.18)*op;
+  // death fade — Standard supports opacity directly; flag transparent only while fading.
   const fade = op<1;
-  [ac.mat].forEach(m=>{ m.transparent=fade; m.opacity=op; });
-  if(ac.headM.material.transparent!==fade){ [ac.headM.material,ac.torsoM.material].forEach(m=>{m.transparent=fade;}); }
-  ac.headM.material.opacity=op; ac.torsoM.material.opacity=op;
+  for(const m of [ac.mat, ac.arm.material, ac.headM.material, ac.capM.material, ac.torsoM.material, ac.gunM.material]){
+    if(m.transparent!==fade) m.transparent=fade; m.opacity=op; }
   if(ac.sprite){ ac.sprite.visible=!dead; ac.sprite.position.set(head(f).x, head(f).y+0.6, head(f).z); }
 }
 function syncParticles(){
@@ -666,10 +808,12 @@ function updateCamera(){
   if(cy<0.5) cy=0.5;                                    // keep camera above ground
   camera.position.set(cx,cy,cz); camera.lookAt(tx,ty,tz);
 }
+let cloudT=0;
 function renderScene(){
   if(!renderer) return;
   for(let i=0;i<game.fighters.length;i++) syncActor(game.fighters[i], actors[i]);
   syncParticles(); syncBullets(); updateCamera();
+  if(cloudGroup){ cloudT+=0.02; cloudGroup.position.x = ((cloudT % (ARENA*2)) ) - ARENA; } // gentle drift, wraps
   renderer.render(scene,camera);
 }
 function resize(){
@@ -856,6 +1000,7 @@ function boot(){
   document.getElementById("muteBtn").addEventListener("click", toggleMute);
   showOverlay(false);
   requestAnimationFrame(frame);
+  if(location.search.includes("autostart")) setTimeout(startMatch, 250);  // dev/testing affordance: skip the menu
 }
 // requestPointerLock returns a Promise in modern browsers; swallow rejection (denied / no-gesture).
 function lockPointer(){ try{ const p=canvas.requestPointerLock&&canvas.requestPointerLock(); if(p&&p.catch) p.catch(()=>{}); }catch(e){} }
@@ -908,7 +1053,7 @@ window.runSelfTest=runSelfTest;
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}</script>
 <script>
 (function(){
-  var BUILD="20260614121515";
+  var BUILD="20260615205509";
   if(BUILD.indexOf("APP_BUILD")>-1) return;
   var busy=false;
   function check(){
