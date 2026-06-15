@@ -149,6 +149,11 @@ const BONES = [                 // [a,b,stiffness]; rest length captured at spaw
   [PT.CHEST,PT.HAND,0.9],[PT.PELVIS,PT.FOOTL,1.0],[PT.PELVIS,PT.FOOTR,1.0],[PT.FOOTL,PT.FOOTR,0.25]
 ];
 const HIT_R = [0.24, 0.34, 0.30];   // head / chest / pelvis hit radii (head smallest → harder)
+// Per-joint muscle stiffness multiplier (indexed by PT). The pelvis is the firmly-rooted anchor that
+// keeps the body upright; everything above/outboard is progressively LOOSER so the living body sways,
+// bobs and swings like a ragdoll instead of a rigid pillar. A uniform-stiff pull (the old behaviour)
+// pinned every point to an upright pose, so the only time it ever flopped was death (muscles off).
+const MUSCLE_W = [0.42, 0.6, 1.0, 0.18, 0.5, 0.5];   // HEAD, CHEST, PELVIS, HAND, FOOTL, FOOTR
 
 const WEAPONS = {
   pistol:  { name:"Pistol",  dmg:24, rofMs:340, spread:0.030, speed:62, recoil:5,  auto:false, pellets:1, range:34, col:0xffd27a },
@@ -267,6 +272,35 @@ function losClear(world, ax,ay,az,bx,by,bz){
   for(const b of world.boxes){ if(segAABB(ax,ay,az,bx,by,bz,b)) return false; }
   return true;
 }
+// Ray (unit dir) vs AABB — nearest entry distance t≥0, else Infinity. Distance form of the slab method.
+function rayAABB(ox,oy,oz, dx,dy,dz, b){
+  const o=[ox,oy,oz], d=[dx,dy,dz], lo=[b.x,b.y,b.z], hi=[b.x+b.w,b.y+b.h,b.z+b.d];
+  let t0=0, t1=Infinity;
+  for(let i=0;i<3;i++){
+    if(Math.abs(d[i])<1e-9){ if(o[i]<lo[i]||o[i]>hi[i]) return Infinity; }
+    else{ let ta=(lo[i]-o[i])/d[i], tb=(hi[i]-o[i])/d[i]; if(ta>tb){const s=ta;ta=tb;tb=s;}
+      if(ta>t0)t0=ta; if(tb<t1)t1=tb; if(t0>t1) return Infinity; }
+  }
+  return t0;
+}
+// Ray (unit dir) vs sphere — nearest forward hit distance t≥0, else Infinity.
+function raySphere(ox,oy,oz, dx,dy,dz, cx,cy,cz, r){
+  const fx=ox-cx, fy=oy-cy, fz=oz-cz;
+  const b=fx*dx+fy*dy+fz*dz, c=fx*fx+fy*fy+fz*fz-r*r, disc=b*b-c;
+  if(disc<0) return Infinity;
+  const t=-b-Math.sqrt(disc); return t>=0 ? t : Infinity;
+}
+// What the player's crosshair is pointed at: cast the camera centre-ray against world boxes + enemy hit
+// spheres and return the nearest hit point (or a far point if nothing). The gun then aims from the chest
+// AT this point, so bullets converge on whatever is under the crosshair despite the over-the-shoulder
+// muzzle offset — this is what makes "aim at the enemy under the crosshair" actually hit.
+function crosshairTarget(ox,oy,oz, dx,dy,dz, selfIdx){
+  let best=240;                                  // far aim clip (well past max weapon range)
+  for(const b of game.world.boxes){ const t=rayAABB(ox,oy,oz,dx,dy,dz,b); if(t<best) best=t; }
+  for(const f of game.fighters){ if(f.idx===selfIdx || f.dead) continue;
+    for(let k=0;k<3;k++){ const pt=f.p[k]; const t=raySphere(ox,oy,oz,dx,dy,dz, pt.x,pt.y,pt.z, HIT_R[k]); if(t<best) best=t; } }
+  return { x:ox+dx*best, y:oy+dy*best, z:oz+dz*best };
+}
 
 /* ---------- 5. SYSTEMS (PURE — mutate state over time) -------------------------------- */
 function impulse(pt,ix,iy,iz){ pt.px-=ix*PHYS.FIXED; pt.py-=iy*PHYS.FIXED; pt.pz-=iz*PHYS.FIXED; }
@@ -310,7 +344,8 @@ function applyMuscles(f, world){
     let tx,ty,tz;
     if(i===PT.HAND){ const c=chest(f); tx=c.x+a.x*0.45; ty=c.y+a.y*0.45; tz=c.z+a.z*0.45; } // hand follows aim
     else { tx=rx+wx; ty=rootY+POSE[i][1]; tz=rz+wz; }
-    const pt=f.p[i]; pt.x+=(tx-pt.x)*k; pt.y+=(ty-pt.y)*k; pt.z+=(tz-pt.z)*k;
+    const ki=k*MUSCLE_W[i];                       // looser on limbs/head, firm on the pelvis → ragdoll sway, still stands
+    const pt=f.p[i]; pt.x+=(tx-pt.x)*ki; pt.y+=(ty-pt.y)*ki; pt.z+=(tz-pt.z)*ki;
   }
   // NOTE: locomotion (walk drive + ground friction) is NOT here. It lives in applyLoco(), which runs
   // AFTER the constraint+collision passes so it gets the FINAL say on the body's velocity each frame.
@@ -829,14 +864,29 @@ function syncBullets(){
   bulletLines.geometry.setDrawRange(0,n*2);
   bulletLines.geometry.attributes.position.needsUpdate=true; bulletLines.geometry.attributes.color.needsUpdate=true;
 }
+// Over-the-shoulder camera rig (pure math, no THREE — shared by the renderer AND the aim raycast so the
+// crosshair and the camera agree exactly). The pivot is offset to the RIGHT of the body and up a little,
+// so the player model sits in the lower-left and screen-centre looks at empty space AHEAD — fixing the
+// old rig that stared dead at the player's own head. `cam` is the eye; `aim` is the eye after the same
+// ground clamp the renderer applies, so the aim ray starts from the real eye position.
+const CAM_SHOULDER = 0.7, CAM_UP = 0.45;
+function camRig(t, yaw, pitch, dist){
+  const cp=Math.cos(pitch);
+  const fwd={ x:Math.sin(yaw)*cp, y:Math.sin(pitch), z:Math.cos(yaw)*cp };
+  const rl=Math.hypot(fwd.x,fwd.z)||1;
+  const right={ x:-fwd.z/rl, y:0, z:fwd.x/rl };         // screen-right (horizontal) = normalize(fwd × up)
+  const pivot={ x:t.x+right.x*CAM_SHOULDER, y:t.y+0.5+CAM_UP, z:t.z+right.z*CAM_SHOULDER };
+  const eyeY=pivot.y-fwd.y*dist;
+  const cam={ x:pivot.x-fwd.x*dist, y:eyeY, z:pivot.z-fwd.z*dist };
+  return { fwd, right, pivot, cam, eyeY:Math.max(0.5,eyeY) };
+}
 function updateCamera(){
   if(!game) return;
   const me=game.fighters[0], t=bodyCenter(me);
-  const fx=Math.sin(cam.yaw)*Math.cos(cam.pitch), fy=Math.sin(cam.pitch), fz=Math.cos(cam.yaw)*Math.cos(cam.pitch);
-  const tx=t.x, ty=t.y+0.5, tz=t.z;
-  let cx=tx - fx*cam.dist, cy=ty - fy*cam.dist, cz=tz - fz*cam.dist;
-  if(cy<0.5) cy=0.5;                                    // keep camera above ground
-  camera.position.set(cx,cy,cz); camera.lookAt(tx,ty,tz);
+  const rig=camRig(t, cam.yaw, cam.pitch, cam.dist);
+  camera.position.set(rig.cam.x, rig.eyeY, rig.cam.z);  // eyeY = ground-clamped eye height
+  // look straight ahead along forward from the pivot (NOT at the player) → centre is the scene ahead
+  camera.lookAt(rig.pivot.x+rig.fwd.x*12, rig.pivot.y+rig.fwd.y*12, rig.pivot.z+rig.fwd.z*12);
 }
 let cloudT=0;
 function renderScene(){
@@ -856,7 +906,6 @@ window.addEventListener("resize", resize);
 /* ---------- 7. INPUT ------------------------------------------------------------------ */
 const keys={w:false,a:false,s:false,d:false,jump:false};
 let mouseDown=false, locked=false;
-const _fwd=new THREE.Vector3(), _right=new THREE.Vector3();
 const SENS=0.0022;
 
 window.addEventListener("keydown",e=>{
@@ -885,15 +934,22 @@ canvas.addEventListener("contextmenu",e=>e.preventDefault());
 function applyPlayerInput(){
   const me=game.fighters[0];
   if(!camera || !me || me.dead || game.paused){ if(me){ me.moveX=0; me.moveZ=0; me.wantFire=false; me.wantJump=false; } return; }
-  camera.getWorldDirection(_fwd);                       // true world forward (incl. pitch)
-  me.aimDir.x=_fwd.x; me.aimDir.y=_fwd.y; me.aimDir.z=_fwd.z;
-  _fwd.y=0; const fl=_fwd.length()||1; _fwd.multiplyScalar(1/fl);
-  _right.crossVectors(_fwd,_up);                        // forward×up = screen-right (principled, not guessed)
+  const rig=camRig(bodyCenter(me), cam.yaw, cam.pitch, cam.dist);
+  // Aim = chest → whatever the crosshair (camera centre-ray) is pointed at. This converges the muzzle on
+  // the target under the crosshair, so what you see centred is what the bullet hits (was: a parallel ray
+  // from the camera that never accounted for the body-offset muzzle → you couldn't hit anything aimed at).
+  const tp=crosshairTarget(rig.cam.x, rig.eyeY, rig.cam.z, rig.fwd.x, rig.fwd.y, rig.fwd.z, me.idx);
+  const c=chest(me);
+  let ax=tp.x-c.x, ay=tp.y-c.y, az=tp.z-c.z; const al=Math.hypot(ax,ay,az)||1;
+  me.aimDir.x=ax/al; me.aimDir.y=ay/al; me.aimDir.z=az/al;
+  // movement basis from the rig's horizontal forward/right
+  const fx=rig.fwd.x, fz=rig.fwd.z, fl=Math.hypot(fx,fz)||1;
+  const fhx=fx/fl, fhz=fz/fl, rx=rig.right.x, rz=rig.right.z;
   const mF=(keys.w?1:0)-(keys.s?1:0), mR=(keys.d?1:0)-(keys.a?1:0);
-  let dx=_fwd.x*mF+_right.x*mR, dz=_fwd.z*mF+_right.z*mR;
+  let dx=fhx*mF+rx*mR, dz=fhz*mF+rz*mR;
   const dl=Math.hypot(dx,dz); if(dl>1){ dx/=dl; dz/=dl; }
   me.moveX=dx; me.moveZ=dz;
-  me.facing=Math.atan2(_fwd.x,_fwd.z);
+  me.facing=Math.atan2(fhx,fhz);
   me.wantJump=keys.jump; me.wantFire=mouseDown || touchFire;
 }
 
@@ -1084,6 +1140,18 @@ function runSelfTest(){
   const wt={boxes:[{x:-1,y:-1,z:4,w:2,h:4,d:1}], spawns:[]};
   check(!losClear(wt, 0,1,0, 0,1,9), "a wall blocks line-of-sight");
   check(losClear(wt, 0,1,0, 0,1,2), "clear path has line-of-sight");
+  // aim convergence: the crosshair raycast must land on an enemy directly under it (regression guard for
+  // the "can't aim at enemies" bug — bullets are aimed from the chest at crosshairTarget's point).
+  { const ag=newMatch(55); game=ag; ag.world.boxes=[];
+    const me=ag.fighters[0], en=ag.fighters[1];
+    const HY=[1.78,1.42,1.0];                                           // head/chest/pelvis heights
+    for(let k=0;k<3;k++){ en.p[k].x=0; en.p[k].y=HY[k]; en.p[k].z=10; } // enemy 10 m straight ahead (+z)
+    ag.fighters=[me,en];
+    const tp=crosshairTarget(0,1.42,0, 0,0,1, me.idx);                  // eye at chest height, looking +z
+    check(tp.z>8 && tp.z<10 && Math.abs(tp.x)<0.4, "crosshair raycast converges on the enemy under it: z="+tp.z.toFixed(2));
+    const far=crosshairTarget(0,1.42,0, 0,0,-1, me.idx);               // nothing behind → far clip, no false hit
+    check(far.z<-100, "crosshair with no target returns a far point (no phantom lock): z="+far.z.toFixed(0)); }
+  game=g0;
   const wm=newMatch(9); game=wm; wm.targetKills=2; wm.fighters[3].kills=1;
   kill(wm.fighters[5],3,1,0,0); check(wm.phase==="over"&&wm.winner===wm.fighters[3], "reaching target kills ends the match");
   console.log(fails? ("SELF-TEST FAILED ("+fails+")") : "SELF-TEST PASSED");
@@ -1098,7 +1166,7 @@ window.runSelfTest=runSelfTest;
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}</script>
 <script>
 (function(){
-  var BUILD="20260615212433";
+  var BUILD="20260615213843";
   if(BUILD.indexOf("APP_BUILD")>-1) return;
   var busy=false;
   function check(){
