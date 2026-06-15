@@ -129,7 +129,8 @@ const LS_KEY = "village_ffa_v1";          // shared key with the prior version (
 const ARENA = 56;                          // half-extent of the playfield (x,z ∈ [-ARENA, ARENA])
 const PHYS = {
   FIXED: 1/120, G: 24, AIR_DAMP: 0.992, CONSTRAINT_ITERS: 6,
-  MUSCLE: 0.34, WALK_SPEED: 6.2, JUMP_VY: 8.6, STRIDE: 0.16, GROUND_FRICTION: 0.55
+  MUSCLE: 0.34, WALK_SPEED: 6.2, JUMP_VY: 8.6, STRIDE: 0.16, GROUND_FRICTION: 0.55,
+  MOVE_ACCEL: 0.2, STOP_FRICTION: 0.3, STOP_DEADZONE: 1.5, AIR_CONTROL: 0.12
 };
 const COUNT = 10, RESPAWN_S = 3.0, BODY_HP = 100;
 
@@ -283,6 +284,7 @@ function stepPhysics(){
   }
   for(let it=0;it<PHYS.CONSTRAINT_ITERS;it++){ for(const f of game.fighters) solveBones(f); }
   for(const f of game.fighters) collideWorld(f, world);
+  for(const f of game.fighters) applyLoco(f, world);   // walk drive + ground friction — final say on velocity
   separateBodies();
   stepBullets();
   stepParticles();
@@ -310,10 +312,38 @@ function applyMuscles(f, world){
     else { tx=rx+wx; ty=rootY+POSE[i][1]; tz=rz+wz; }
     const pt=f.p[i]; pt.x+=(tx-pt.x)*k; pt.y+=(ty-pt.y)*k; pt.z+=(tz-pt.z)*k;
   }
-  if(moving){ const e=PHYS.WALK_SPEED*PHYS.FIXED*k*2;
-    for(const pt of f.p){ pt.x+=f.moveX*e; pt.z+=f.moveZ*e; } }
+  // NOTE: locomotion (walk drive + ground friction) is NOT here. It lives in applyLoco(), which runs
+  // AFTER the constraint+collision passes so it gets the FINAL say on the body's velocity each frame.
+  // Doing it here let solveBones re-inject velocity afterwards, which the body could never shed → it
+  // drifted forever. Muscles only shape the pose; applyLoco moves the body.
   if(f.wantJump && grounded && !f.jumpLock){ for(const pt of f.p) impulse(pt,0,PHYS.JUMP_VY,0); f.jumpLock=true; }
   if(!f.wantJump) f.jumpLock=false;
+}
+
+// Locomotion + ground friction. Runs once per fixed step AFTER constraints & world collision, so it has
+// the final word on the body's horizontal velocity (nothing re-injects motion after it). It steers the
+// CENTER-OF-MASS velocity toward the desired walk velocity by shifting every point's prev-position by the
+// SAME delta — that changes the COM velocity while leaving the points' RELATIVE velocities (the ragdoll
+// flop) untouched. This is the ground friction collideWorld never applied on the flat y=0 plane: without
+// it the old position-injection accelerated the body without bound and it skated forever (see applyMuscles).
+function applyLoco(f, world){
+  if(f.dead) return;
+  const pv=pelvis(f), feetY=Math.min(f.p[PT.FOOTL].y, f.p[PT.FOOTR].y);
+  const grounded = feetY < groundUnder(world, pv.x, pv.z, feetY)+0.18;
+  const moving = (f.moveX||f.moveZ)?1:0;
+  if(!grounded){                                   // airborne: light air-control, momentum preserved (no braking)
+    if(moving){ const e=PHYS.WALK_SPEED*PHYS.FIXED*PHYS.AIR_CONTROL; for(const pt of f.p){ pt.x+=f.moveX*e; pt.z+=f.moveZ*e; } }
+    return;
+  }
+  if(f.stagger>0) return;                          // being knocked around — let momentum rule so hits read
+  let cvx=0,cvz=0; for(const pt of f.p){ cvx+=pt.x-pt.px; cvz+=pt.z-pt.pz; } cvx/=PT.N; cvz/=PT.N;   // COM vel
+  const tvx=f.moveX*PHYS.WALK_SPEED*PHYS.FIXED, tvz=f.moveZ*PHYS.WALK_SPEED*PHYS.FIXED;               // target vel
+  let c = moving ? PHYS.MOVE_ACCEL : PHYS.STOP_FRICTION;
+  // Once stopped & slow, pin the COM to a dead stop (c=1): the muscles pump a little residual velocity
+  // every frame, so a fractional brake alone leaves a ~0.7 m/s creep. The deadzone snaps it to zero.
+  if(!moving && Math.hypot(cvx,cvz) < PHYS.STOP_DEADZONE*PHYS.FIXED) c=1;
+  const ddx=(tvx-cvx)*c, ddz=(tvz-cvz)*c;
+  for(const pt of f.p){ pt.px-=ddx; pt.pz-=ddz; }
 }
 
 function solveBones(f){
@@ -1020,13 +1050,28 @@ function runSelfTest(){
   const a=newMatch(777), b=newMatch(777);
   check(Math.abs(pelvis(a.fighters[1]).x-pelvis(b.fighters[1]).x)<1e-9 &&
         Math.abs(pelvis(a.fighters[1]).z-pelvis(b.fighters[1]).z)<1e-9, "world+spawn deterministic for a seed");
-  game=g0; let finite=true, upright=0, sunk=false;
+  game=g0; let finite=true, upright=0, alive=0, sunk=false;
   for(let i=0;i<600;i++) stepFixed(PHYS.FIXED);
   for(const f of g0.fighters){ for(const pt of f.p){ if(!isFin(pt.x)||!isFin(pt.y)||!isFin(pt.z)) finite=false; if(pt.y<-1) sunk=true; }
-    if(!f.dead && head(f).y>pelvis(f).y && pelvis(f).y>0.4) upright++; }
+    if(f.dead) continue; alive++;                                  // dead fighters are mid-respawn ragdolls — not "tipped"
+    if(head(f).y>pelvis(f).y && pelvis(f).y>0.4) upright++; }
   check(finite, "no NaN/Infinity in any ragdoll point after 600 steps (3D)");
   check(!sunk, "no point sinks below the ground plane");
-  check(upright>=COUNT*0.55, "most conscious fighters stay upright (3D muscles work): "+upright+"/"+COUNT);
+  // Uprightness is measured among the LIVING only. The old check counted upright/COUNT, which conflated
+  // "dead & respawning" with "fell over" — once movement was fixed, combat became lethal and the death
+  // count (not any tipping) sank the metric. 80% of the living upright tolerates a fighter mid-knockback.
+  check(alive>0 && upright>=Math.ceil(alive*0.8), "conscious fighters stay upright (3D muscles work): "+upright+"/"+alive+" alive");
+  // movement is bounded & brakes to a stop — regression guard for the no-friction skating runaway.
+  // Single fighter in a box-free world: isolates locomotion (no walls to eject off, no body collisions).
+  { const mv=newMatch(4242); mv.world.boxes=[]; rng=mulberry32(4242);
+    const pl=makeFighter(0,0,0.5,0); mv.fighters=[pl]; game=mv;
+    for(let i=0;i<150;i++){ pl.moveX=0; pl.moveZ=1; pl.wantJump=false; stepPhysics(); }
+    const sp1=Math.hypot(pelvis(pl).x-pelvis(pl).px, pelvis(pl).z-pelvis(pl).pz)/PHYS.FIXED;
+    check(sp1 < PHYS.WALK_SPEED*1.5, "walk speed stays bounded near WALK_SPEED — no skating runaway: "+sp1.toFixed(2)+" m/s");
+    for(let i=0;i<90;i++){ pl.moveX=0; pl.moveZ=0; stepPhysics(); }
+    const sp2=Math.hypot(pelvis(pl).x-pelvis(pl).px, pelvis(pl).z-pelvis(pl).pz)/PHYS.FIXED;
+    check(sp2 < 0.6, "body brakes to a near-stop when input is released (no ground skating): "+sp2.toFixed(2)+" m/s"); }
+  game=g0;
   const t=g0.fighters[2], before=t.hp;
   damage(t,30,1,1,0,0,false); check(t.hp===before-30, "body shot subtracts exact damage");
   damage(t,5,1,1,0,0,true);  check(t.hp===before-40, "headshot doubles damage (5→10)");
@@ -1053,7 +1098,7 @@ window.runSelfTest=runSelfTest;
 <script>if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}</script>
 <script>
 (function(){
-  var BUILD="20260615205509";
+  var BUILD="20260615212433";
   if(BUILD.indexOf("APP_BUILD")>-1) return;
   var busy=false;
   function check(){
